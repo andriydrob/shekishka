@@ -1,4 +1,4 @@
-import { POS, RING, SIZE, armCell, jailCell, jailLabels, ringCell, special, startIdx, type Cell, type Side } from '../game/board'
+import { POS, RING, SIZE, armCell, jailCell, jailLabels, nestCell, ringCell, special, startIdx, type Cell, type Side } from '../game/board'
 import { ARM_START, ringIdx, type Action, type State } from '../game/engine'
 
 export const PLAYER_COLORS = ['#3b82f6', '#ef4444', '#facc15', '#22c55e']
@@ -16,13 +16,16 @@ export function pieceCell(st: State, pl: number, pi: number): Cell | null {
     case 'jail': return jailCell((Math.floor(ringIdx(side, pc.p) / 12)) as Side, pc.stage)
     case 'done': return armCell(side, pc.slot)
     case 'captured': return null
-    case 'home':
+    case 'home': {
+      // до шістки фішки чекають у будиночку біля рукава
+      const order = st.pieces[pl].map((x, i) => (x.at === 'home' ? i : -1)).filter((i) => i >= 0)
+      return nestCell(side, order.indexOf(pi))
+    }
     case 'ready': {
-      // домашні фішки займають вільні слоти рукава з найглибшого; введені в гру — ближче до кільця
+      // введені шісткою стоять у рукаві на вільних клітинках, ближчих до кільця
       const used = new Set(st.pieces[pl].flatMap((x) => (x.at === 'done' ? [x.slot] : [])))
-      const free = [3, 2, 1, 0].filter((s) => !used.has(s))
-      const idx = (at: string) => st.pieces[pl].map((x, i) => (x.at === at ? i : -1)).filter((i) => i >= 0)
-      const order = [...idx('home'), ...idx('ready')]
+      const free = [0, 1, 2, 3].filter((s) => !used.has(s))
+      const order = st.pieces[pl].map((x, i) => (x.at === 'ready' ? i : -1)).filter((i) => i >= 0)
       return armCell(side, free[order.indexOf(pi)])
     }
   }
@@ -108,6 +111,7 @@ export function Board({ state, selectable, selected, onSelect, targets, hop }: P
         const pl = owner(side)
         return (
           <g key={side}>
+            {pl >= 0 && <Nest side={side} color={PLAYER_COLORS[pl]} />}
             {[0, 1, 2, 3].map((slot) => {
               const { c, r } = armCell(side, slot)
               return <rect key={slot} x={c * U} y={r * U} width={U} height={U} className="cell" fill={pl >= 0 ? PLAYER_COLORS[pl] : 'none'} fillOpacity={pl >= 0 ? 0.2 : 0} />
@@ -177,6 +181,14 @@ export function Board({ state, selectable, selected, onSelect, targets, hop }: P
 
     </svg>
   )
+}
+
+function Nest({ side, color }: { side: Side; color: string }) {
+  const cells = [0, 1, 2, 3].map((k) => nestCell(side, k))
+  const cs = cells.map((c) => c.c), rs = cells.map((c) => c.r)
+  const x = Math.min(...cs) * U, y = Math.min(...rs) * U
+  const w = (Math.max(...cs) + 1) * U - x, h = (Math.max(...rs) + 1) * U - y
+  return <rect x={x + 0.8} y={y + 0.8} width={w - 1.6} height={h - 1.6} rx={3} className="nest" fill={color} />
 }
 
 function Checker({ x, y }: { x: number; y: number }) {

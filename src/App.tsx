@@ -18,6 +18,7 @@ interface Settings { players: number; seats: Seat[]; turnSeconds: number }
 const LEVEL_NAMES: Record<Level, string> = { easy: 'легкий', medium: 'середній', hard: 'важкий' }
 const TIMES = [15, 30, 45, 60, 0]
 const BOT_DELAY = 700
+const NO_MOVES_DELAY = 1500 // скільки показувати кубики, коли ходів немає, перед автопропуском
 const HOP_DELAY = 450 // фішка спершу стає на П/В/стрілку, потім стрибає
 
 export default function App() {
@@ -153,7 +154,7 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
     setMessage(`${seatName(settings, me)}: час вийшов, хід зроблено автоматично`)
   }, [left]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // боти; людина без ходів сама натискає «Пропустити хід»
+  // боти й автоматичний пропуск, коли ходів немає
   useEffect(() => {
     if (game.winner !== null) return
     if (seat !== 'human') {
@@ -161,7 +162,9 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
       return () => clearTimeout(t)
     }
     if (game.dice && legal.length === 0) {
-      setMessage(`${seatName(settings, me)}: немає ходів — натисни «Пропустити хід»`)
+      setMessage(`${seatName(settings, me)}: немає ходів, хід переходить далі`)
+      const t = setTimeout(() => act({ type: 'pass' }), NO_MOVES_DELAY)
+      return () => clearTimeout(t)
     }
   }, [game]) // eslint-disable-line react-hooks/exhaustive-deps
 

@@ -128,6 +128,7 @@ button, select { font: inherit; color: inherit; }
 
 /* поле */
 .cell { stroke: var(--cell-line); stroke-width: 0.45; }
+.nest { fill-opacity: 0.16; stroke: var(--cell-line); stroke-width: 0.4; stroke-dasharray: 1.2 0.9; }
 .mark {
   font-family: var(--font-hand); font-weight: 700; font-size: 7.5px; fill: var(--ink);
   text-anchor: middle; dominant-baseline: central;
