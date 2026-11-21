@@ -286,6 +286,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const isHuman = (online ? me === settings.mySeat : seat === 'human') && game.winner === null
   const legal = useMemo(() => legalActions(game), [game])
   const humanIdx = online ? settings.mySeat! : isHuman ? me : settings.seats.indexOf('human')
+  const viewer = online ? settings.mySeat! : settings.seats.indexOf('human') // чиє поле внизу
 
   // Анімація ходу: фішка йде по клітинках, на П/В/стрілці зупиняється й стрибає;
   // побита фішка стоїть, доки до неї не дійде нападник, і вибухає. Повертає тривалість у мс.
@@ -456,7 +457,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
       </aside>
 
       <main className="board-wrap">
-        <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} kills={kills} />
+        <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} kills={kills} bottom={viewer >= 0 ? game.sides[viewer] : undefined} />
       </main>
 
       <aside className="side right">

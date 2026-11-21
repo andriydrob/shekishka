@@ -56,13 +56,20 @@ interface Props {
   targets: Target[]
   hop: Hop | null // фішка, що зараз іде по клітинках
   kills: Kill[]
+  bottom?: Side // чия сторона показується знизу (своє поле — у себе внизу)
 }
 
 const SIDES: Side[] = [0, 1, 2, 3]
 
-export function Board({ state, selectable, selected, onSelect, targets, hop, kills }: Props) {
+export function Board({ state, selectable, selected, onSelect, targets, hop, kills, bottom = 2 }: Props) {
   const ring = Array.from({ length: RING }, (_, i) => i)
   const owner = (side: Side) => state.sides.indexOf(side)
+  // повертаємо все поле на чверті оберту проти годинникової, щоб сторона bottom стала знизу (2);
+  // написи й фішки повертаємо назад, щоб стояли рівно
+  const deg = -90 * ((2 - bottom + 4) % 4)
+  const mid = (SIZE * U) / 2
+  const upright = (x: number, y: number) => (deg ? `rotate(${-deg} ${x} ${y})` : undefined)
+  const unspin = deg ? ` rotate(${-deg}deg)` : ''
 
   return (
     <svg className="board" viewBox={`-12 -12 ${SIZE * U + 24} ${SIZE * U + 24}`} role="img" aria-label="Ігрове поле">
@@ -86,6 +93,7 @@ export function Board({ state, selectable, selected, onSelect, targets, hop, kil
           <stop offset="0.5" stopColor="#fff" stopOpacity="0" />
         </radialGradient>
       </defs>
+      <g transform={deg ? `rotate(${deg} ${mid} ${mid})` : undefined}>
 
       <rect x="-3" y="-3" width={SIZE * U + 6} height={SIZE * U + 6} rx="3" fill="url(#wood)" />
       <rect x="-3" y="-3" width={SIZE * U + 6} height={SIZE * U + 6} rx="3" filter="url(#grain)" />
@@ -101,8 +109,8 @@ export function Board({ state, selectable, selected, onSelect, targets, hop, kil
           <g key={i}>
             <rect x={x} y={y} width={U} height={U} className="cell" fill={pl >= 0 ? PLAYER_COLORS[pl] : 'none'} fillOpacity={pl >= 0 ? 0.28 : 0} />
             {sp === 'corner' && <Checker x={x} y={y} />}
-            {sp === 'fly' && <text x={x + U / 2} y={y + U / 2} className="mark fly">П</text>}
-            {sp === 'back' && <text x={x + U / 2} y={y + U / 2} className="mark">В</text>}
+            {sp === 'fly' && <text x={x + U / 2} y={y + U / 2} transform={upright(x + U / 2, y + U / 2)} className="mark fly">П</text>}
+            {sp === 'back' && <text x={x + U / 2} y={y + U / 2} transform={upright(x + U / 2, y + U / 2)} className="mark">В</text>}
             {sp === 'jail' && <JailArrow side={Math.floor(i / 12) as Side} x={x} y={y} />}
           </g>
         )
@@ -123,7 +131,7 @@ export function Board({ state, selectable, selected, onSelect, targets, hop, kil
               return (
                 <g key={t}>
                   <rect x={c * U} y={r * U} width={U} height={U} className="cell" fill="none" />
-                  <text x={c * U + U / 2} y={r * U + U / 2} className="mark">{t}</text>
+                  <text x={c * U + U / 2} y={r * U + U / 2} transform={upright(c * U + U / 2, r * U + U / 2)} className="mark">{t}</text>
                 </g>
               )
             })}
@@ -157,7 +165,7 @@ export function Board({ state, selectable, selected, onSelect, targets, hop, kil
           const cls = ['piece', can && 'can', selected === pi && pl === state.current && 'sel', fin && 'done', pc.at === 'ready' && 'ready'].filter(Boolean).join(' ')
           const label = `${PLAYER_NAMES_COLOR[pl]} фішка ${pi + 1}`
           return (
-            <g key={`${pl}-${pi}`} className={cls} style={{ transform: `translate(${x}px, ${y}px)`, transitionDuration: hopping?.ms ? `${hopping.ms}ms` : undefined }}
+            <g key={`${pl}-${pi}`} className={cls} style={{ transform: `translate(${x}px, ${y}px)${unspin}`, transitionDuration: hopping?.ms ? `${hopping.ms}ms` : undefined }}
               {...(can ? {
                 role: 'button', tabIndex: 0, 'aria-label': label, 'aria-pressed': selected === pi,
                 onClick: () => onSelect(pi),
@@ -175,7 +183,7 @@ export function Board({ state, selectable, selected, onSelect, targets, hop, kil
       {kills.map((k) => {
         const { x, y } = center(k.cell)
         return (
-          <g key={k.key} className={`kill ${k.boom ? 'boom' : ''}`} style={{ transform: `translate(${x}px, ${y}px)` }} aria-hidden>
+          <g key={k.key} className={`kill ${k.boom ? 'boom' : ''}`} style={{ transform: `translate(${x}px, ${y}px)${unspin}` }} aria-hidden>
             {k.boom && <circle r={3.3} className="flash" />}
             <g className="victim">
               <circle r={3.3} fill={k.color} className="body" />
@@ -199,11 +207,11 @@ export function Board({ state, selectable, selected, onSelect, targets, hop, kil
           <g key={t.key} className={`target ${t.capture ? 'capture' : ''}`} role="button" tabIndex={0} aria-label={`Походити на ${t.label}${t.capture ? ', побити фішку' : ''}`}
             onClick={t.onPick} onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && t.onPick()}>
             <circle cx={x} cy={y} r={4.4} />
-            <text x={x} y={y}>{t.label}</text>
+            <text x={x} y={y} transform={upright(x, y)}>{t.label}</text>
           </g>
         )
       })}
-
+      </g>
     </svg>
   )
 }
