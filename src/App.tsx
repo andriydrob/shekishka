@@ -20,6 +20,7 @@ const STEP_MS = 180 // фішка йде по клітинці за крок
 const JUMP_PAUSE = 380 // стоїть на П/В/стрілці перед стрибком
 const JUMP_MS = 420 // сам стрибок
 const BOOM_MS = 700 // вибух побитої фішки
+const TOAST_MS = 2000 // скільки показувати «Твою фішку вбили»
 const sameCell = (a: Cell | null | undefined, b: Cell | null | undefined) => !!a && !!b && a.c === b.c && a.r === b.r
 
 const roomFromUrl = () => new URLSearchParams(location.search).get('room')
@@ -37,7 +38,8 @@ export default function App() {
     setScreen({ kind: 'menu' })
   }
   const createRoom = async (s: Settings) => {
-    const res = await api({ op: 'create', players: s.players, turnSeconds: s.turnSeconds })
+    const bots = s.seats.map((x, i) => (i === 0 || x === 'human' ? null : x))
+    const res = await api({ op: 'create', players: s.players, turnSeconds: s.turnSeconds, bots })
     if (!res.room || res.token === undefined) return alert(res.error ?? 'Не вдалося створити кімнату')
     saveCreds(res.room.id, { seat: 0, token: res.token })
     history.replaceState(null, '', `?room=${res.room.id}`)
@@ -61,7 +63,7 @@ export default function App() {
 
 function Setup({ onStart, onBack, online }: { onStart: (s: Settings) => void; onBack: () => void; online?: boolean }) {
   const [players, setPlayers] = useState(2)
-  const [seats, setSeats] = useState<Seat[]>(['human', 'medium', 'medium', 'medium'])
+  const [seats, setSeats] = useState<Seat[]>(online ? ['human', 'human', 'human', 'human'] : ['human', 'medium', 'medium', 'medium'])
   const [turnSeconds, setTurnSeconds] = useState(30)
   return (
     <main className="setup">
@@ -73,16 +75,18 @@ function Setup({ onStart, onBack, online }: { onStart: (s: Settings) => void; on
             <button key={n} role="radio" aria-checked={players === n} onClick={() => setPlayers(n)}>{n}</button>
           ))}
         </div>
-        {!online && seats.slice(0, players).map((seat, i) => (
+        {seats.slice(0, players).map((seat, i) => (
           <label key={i} className="seat">
             <span className="dot" style={{ background: PLAYER_COLORS[i] }} aria-hidden />
             <span>{PLAYER_NAMES_COLOR[i]}</span>
+            {online && i === 0 ? <span className="muted">Ти</span> : (
             <select value={seat} onChange={(e) => setSeats(seats.map((s, j) => (j === i ? (e.target.value as Seat) : s)))}>
-              <option value="human">Людина</option>
+              <option value="human">{online ? 'Друг' : 'Людина'}</option>
               <option value="easy">Бот: легкий</option>
               <option value="medium">Бот: середній</option>
               <option value="hard">Бот: важкий</option>
             </select>
+            )}
           </label>
         ))}
       </section>
@@ -106,8 +110,8 @@ function Setup({ onStart, onBack, online }: { onStart: (s: Settings) => void; on
 
 function seatName(settings: Settings, i: number) {
   const seat = settings.seats[i]
-  if (settings.mySeat !== undefined) return i === settings.mySeat ? 'Ти' : PLAYER_NAMES_COLOR[i]
   if (seat !== 'human') return `Бот (${LEVEL_NAMES[seat]})`
+  if (settings.mySeat !== undefined) return i === settings.mySeat ? 'Ти' : PLAYER_NAMES_COLOR[i]
   return settings.seats.filter((s) => s === 'human').length === 1 ? 'Ти' : `Гравець ${i + 1}`
 }
 
@@ -189,10 +193,10 @@ function Online({ id, fresh, onMenu }: { id: string; fresh?: boolean; onMenu: ()
   if (!room || !creds) return <main className="setup"><p>Підключення…</p></main>
   const link = `${location.origin}${location.pathname}?room=${room.id}`
   if (!shared) return <ShareLink room={room} link={link} onNext={() => setShared(true)} onMenu={onMenu} />
-  const playing = room.joined === room.players && (room.ready?.every(Boolean) ?? true)
+  const playing = room.taken.every(Boolean) && (room.ready?.every(Boolean) ?? true)
   if (!playing) return <WaitingRoom room={room} link={link} mySeat={creds.seat} send={send} onMenu={onMenu} />
   return (
-    <Game key={id} settings={{ players: room.players, seats: Array(room.players).fill('human'), turnSeconds: room.turnSeconds, mySeat: creds.seat }}
+    <Game key={id} settings={{ players: room.players, seats: Array.from({ length: room.players }, (_, i) => room.bots?.[i] ?? 'human'), turnSeconds: room.turnSeconds, mySeat: creds.seat }}
       online={{ room, deadlineLocal, send }} onMenu={onMenu} onRestart={onMenu} />
   )
 }
@@ -234,7 +238,7 @@ function WaitingRoom({ room, link, mySeat, send, onMenu }: { room: PublicRoom; l
     setBusy(true)
     send({ op: 'ready', ready: !iAmReady }).finally(() => setBusy(false))
   }
-  const waitingFor = room.players - room.joined
+  const waitingFor = room.taken.filter((t) => !t).length
   return (
     <main className="setup">
       <h1>Шекішка</h1>
@@ -242,12 +246,13 @@ function WaitingRoom({ room, link, mySeat, send, onMenu }: { room: PublicRoom; l
         <h2 id="wait-h">Кімната очікування</h2>
         <ul className="lobby-seats" aria-live="polite">
           {Array.from({ length: room.players }, (_, i) => {
-            const status = i >= room.joined ? 'чекаємо…' : ready[i] ? 'готовий ✓' : 'у кімнаті'
+            const bot = room.bots?.[i]
+            const status = !room.taken[i] ? 'чекаємо…' : ready[i] ? 'готовий ✓' : 'у кімнаті'
             return (
               <li key={i}>
                 <span className="dot" style={{ background: PLAYER_COLORS[i] }} aria-hidden />
-                <span>{PLAYER_NAMES_COLOR[i]}{i === mySeat ? ' (ти)' : ''}</span>
-                <span className={i < room.joined && ready[i] ? 'seat-ready' : 'muted'}>{status}</span>
+                <span>{PLAYER_NAMES_COLOR[i]}{i === mySeat ? ' (ти)' : bot ? ` — бот (${LEVEL_NAMES[bot]})` : ''}</span>
+                <span className={room.taken[i] && ready[i] ? 'seat-ready' : 'muted'}>{status}</span>
               </li>
             )
           })}
@@ -278,6 +283,13 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const [rolling, setRolling] = useState(false)
   const [hop, setHop] = useState<Hop | null>(null)
   const [kills, setKills] = useState<Kill[]>([])
+  const [toast, setToast] = useState<{ key: number; text: string } | null>(null)
+  const toastTimer = useRef(0)
+  const showToast = (text: string) => {
+    clearTimeout(toastTimer.current)
+    setToast({ key: Date.now(), text })
+    toastTimer.current = window.setTimeout(() => setToast(null), TOAST_MS)
+  }
   const timers = useRef<number[]>([])
   const busyUntil = useRef(0)
 
@@ -309,19 +321,26 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
     } else if (steps.length) end = last + STEP_MS
     if (steps.length) at(end, () => setHop(null))
 
-    const victims: Kill[] = []
+    const victims: (Kill & { owner: number })[] = []
     prev.pieces.forEach((row, vpl) => row.forEach((pc, vpi) => {
       const cell = pieceCell(prev, vpl, vpi)
       if (vpl !== pl && pc.at !== 'captured' && next.pieces[vpl][vpi].at === 'captured' && cell)
-        victims.push({ key: `${vpl}-${vpi}-${next.turn}`, cell, color: PLAYER_COLORS[vpl], boom: false })
+        victims.push({ key: `${vpl}-${vpi}-${next.turn}`, cell, color: PLAYER_COLORS[vpl], boom: false, owner: vpl })
     }))
+    // сповіщення тому, чию фішку вбили (на цьому пристрої)
+    const humans = settings.seats.filter((s) => s === 'human').length
+    const isMine = (owner: number) => (online ? owner === settings.mySeat : settings.seats[owner] === 'human')
+    const killText = (owner: number) => `${!online && humans > 1 ? `${PLAYER_NAMES_COLOR[owner]}, твою` : 'Твою'} фішку вбив ${seatName(settings, pl)}!`
     let total = end
     if (victims.length) {
       setKills(victims)
       victims.forEach((v) => {
         const idx = steps.findIndex((c) => sameCell(c, v.cell))
         const hit = idx >= 0 ? idx * STEP_MS + 120 : end
-        at(hit, () => setKills((ks) => ks.map((k) => (k.key === v.key ? { ...k, boom: true } : k))))
+        at(hit, () => {
+          setKills((ks) => ks.map((k) => (k.key === v.key ? { ...k, boom: true } : k)))
+          if (isMine(v.owner)) showToast(killText(v.owner))
+        })
         total = Math.max(total, hit + BOOM_MS)
       })
       at(total, () => setKills([]))
@@ -390,7 +409,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   }, [])
   // поки дедлайн не оновився для нового ходу, показуємо повний час
   const left = !settings.turnSeconds ? null
-    : online ? Math.max(0, Math.ceil((online.deadlineLocal - now) / 1000))
+    : online ? Math.min(settings.turnSeconds, Math.max(0, Math.ceil((online.deadlineLocal - now) / 1000)))
     : deadline.turn !== game.turn ? settings.turnSeconds : Math.max(0, Math.ceil((deadline.at - now) / 1000))
   useEffect(() => {
     if (online || !isHuman || left !== 0) return // онлайн прострочений хід робить сервер
@@ -402,7 +421,10 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   // боти й автоматичний пропуск, коли ходів немає
   useEffect(() => {
     if (game.winner !== null) return
-    if (seat !== 'human') {
+    if (online) {
+      // онлайн за ботів ходить сервер; сам пропускаєш лише свій хід, коли ходів немає
+      if (!isHuman) return
+    } else if (seat !== 'human') {
       // бот чекає, поки дограє анімація попереднього ходу
       const wait = Math.max(BOT_DELAY, busyUntil.current - Date.now() + 300)
       const t = setTimeout(() => (game.dice || legal.length ? act(chooseAction(game, seat)) : doRoll()), wait)
@@ -458,6 +480,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
 
       <main className="board-wrap">
         <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} kills={kills} bottom={viewer >= 0 ? game.sides[viewer] : undefined} />
+        {toast && <div key={toast.key} className="toast" role="alert">{toast.text}</div>}
       </main>
 
       <aside className="side right">

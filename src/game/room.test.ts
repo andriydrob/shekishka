@@ -53,6 +53,28 @@ describe('онлайн-кімната', () => {
     expect(r.deadline).toBe(T0 + 16_000 + 15_000)
   })
 
+  it('кімната з ботом: бот одразу готовий, ходить сам кроками з паузою, за нього ходити не можна', () => {
+    const r = createRoom('abc234', 3, 30, 'host', [null, null, 'easy'])
+    expect(publicView(r, T0).taken).toEqual([true, false, true])
+    expect(joinRoom(r, 'friend', T0)).toBe(1) // друг займає вільне місце, а не місце бота
+    expect(joinRoom(r, 'x', T0)).toBeNull()
+    play(r, 0, 'host', { op: 'ready', ready: true }, T0)
+    play(r, 1, 'friend', { op: 'ready', ready: true }, T0)
+    expect(started(r)).toBe(true)
+    r.state = { ...r.state, current: 2 } // хід бота
+    expect(play(r, 2, '', { op: 'roll' }, T0)).toBe('Невідомий гравець') // порожній токен місця бота не підходить
+    expect(tick(r, T0 + 100)).toBe(false) // чекає паузу після старту
+    let t = T0 + 2000, steps = 0
+    while (r.state.current === 2 && steps < 10) {
+      expect(tick(r, t)).toBe(true)
+      expect(tick(r, t)).toBe(false) // наступний крок — лише після паузи
+      t += 5000
+      steps++
+    }
+    expect(r.state.current).not.toBe(2)
+    expect(steps).toBeGreaterThanOrEqual(2) // щонайменше кидок і хід (або пропуск)
+  })
+
   it('токени не потрапляють у публічний стан', () => {
     const r = createRoom('abc234', 2, 30, 'host')
     expect(JSON.stringify(publicView(r, T0))).not.toContain('host')

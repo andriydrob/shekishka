@@ -82,7 +82,22 @@ button, select { font: inherit; color: inherit; }
   gap: 16px; padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; justify-content: center; }
-.board-wrap { display: grid; place-items: center; min-width: 0; min-height: 0; }
+.board-wrap { display: grid; place-items: center; min-width: 0; min-height: 0; position: relative; }
+/* «Твою фішку вбили» — поверх поля на 2 с */
+.toast {
+  position: absolute; top: 12%; left: 50%; z-index: 10; max-width: calc(100% - 24px);
+  padding: 10px 24px; border-radius: 14px; background: #b91c1c; color: #fff;
+  font-family: var(--font-hand); font-size: 32px; font-weight: 700; text-align: center;
+  box-shadow: 0 10px 30px rgba(0,0,0,.55), 0 0 0 2px rgba(255,255,255,.3), 0 0 28px rgba(255,59,59,.55);
+  pointer-events: none; transform: translateX(-50%);
+  animation: toast 2s var(--ease-out) forwards;
+}
+@keyframes toast {
+  0% { opacity: 0; transform: translate(-50%, -12px) scale(0.9); }
+  10%, 85% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, 0) scale(1); }
+}
+@media (max-width: 600px) { .toast { font-size: 24px; padding: 8px 16px; } }
 .board {
   width: 100%; height: 100%; max-height: calc(100dvh - 24px); aspect-ratio: 1;
   border-radius: 8px; box-shadow: 0 0 0 3px #dce8ff, 0 0 26px 4px rgba(122, 167, 255, 0.55);
@@ -210,6 +225,7 @@ button, select { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .piece, .btn, .die { transition: none; }
   .kill .shock, .kill .spark, .kill .flash { display: none; }
+  .toast { animation: none; }
   .kill.boom .victim { animation: victim-fade 300ms forwards; }
   @keyframes victim-fade { to { opacity: 0; } }
   .dice.rolling .die, .piece.can .body { animation: none; }
