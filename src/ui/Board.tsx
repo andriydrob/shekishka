@@ -16,11 +16,13 @@ export function pieceCell(st: State, pl: number, pi: number): Cell | null {
     case 'jail': return jailCell((Math.floor(ringIdx(side, pc.p) / 12)) as Side, pc.stage)
     case 'done': return armCell(side, pc.slot)
     case 'captured': return null
-    case 'home': {
-      // домашні фішки займають вільні слоти рукава, починаючи з найглибшого
+    case 'home':
+    case 'ready': {
+      // домашні фішки займають вільні слоти рукава з найглибшого; введені в гру — ближче до кільця
       const used = new Set(st.pieces[pl].flatMap((x) => (x.at === 'done' ? [x.slot] : [])))
       const free = [3, 2, 1, 0].filter((s) => !used.has(s))
-      const order = st.pieces[pl].map((x, i) => (x.at === 'home' ? i : -1)).filter((i) => i >= 0)
+      const idx = (at: string) => st.pieces[pl].map((x, i) => (x.at === at ? i : -1)).filter((i) => i >= 0)
+      const order = [...idx('home'), ...idx('ready')]
       return armCell(side, free[order.indexOf(pi)])
     }
   }
@@ -32,7 +34,7 @@ export function stopCell(st: State, a: Action): Cell | null {
   if (a.type !== 'use' || !st.dice) return null
   const me = st.current
   const pc = st.pieces[me][a.piece]
-  const from = pc.at === 'ring' || (pc.at === 'jail' && pc.stage === 2) ? pc.p : null
+  const from = pc.at === 'ready' ? -1 : pc.at === 'ring' || (pc.at === 'jail' && pc.stage === 2) ? pc.p : null
   if (from === null) return null
   const q = from + a.dice.reduce((s: number, i) => s + st.dice![i], 0)
   return q >= ARM_START ? armCell(st.sides[me], q - ARM_START) : ringCell(ringIdx(st.sides[me], q))
@@ -143,25 +145,11 @@ export function Board({ state, selectable, selected, onSelect, targets, hop }: P
           const cell = hop && hop.pl === pl && hop.pi === pi ? hop.cell : pieceCell(state, pl, pi)
           if (!cell) return null
           const { x, y } = center(cell)
-          // кілька фішок в одній клітинці тюрми стають поруч сіткою, трохи менші
-          const same = pc.at === 'jail'
-            ? state.pieces.flatMap((r2, p2) => r2.map((_, i2) => [p2, i2] as const)).filter(([p2, i2]) => {
-                const c2 = state.pieces[p2][i2].at === 'jail' && pieceCell(state, p2, i2)
-                return c2 && c2.c === cell.c && c2.r === cell.r
-              })
-            : []
-          const n = Math.max(1, same.length)
-          const k = Math.max(0, same.findIndex(([p2, i2]) => p2 === pl && i2 === pi))
-          const cols = Math.ceil(Math.sqrt(n))
-          const step = U / cols
-          const dx = n > 1 ? ((k % cols) - (cols - 1) / 2) * step : 0
-          const dy = n > 1 ? (Math.floor(k / cols) - (Math.ceil(n / cols) - 1) / 2) * step : 0
-          const scale = n > 1 ? Math.min(1, (step * 0.46) / 3.3) : 1
           const can = pl === state.current && selectable.has(pi)
-          const cls = ['piece', can && 'can', selected === pi && pl === state.current && 'sel', pc.at === 'done' && 'done'].filter(Boolean).join(' ')
+          const cls = ['piece', can && 'can', selected === pi && pl === state.current && 'sel', pc.at === 'done' && 'done', pc.at === 'ready' && 'ready'].filter(Boolean).join(' ')
           const label = `${PLAYER_NAMES_COLOR[pl]} фішка ${pi + 1}`
           return (
-            <g key={`${pl}-${pi}`} className={cls} style={{ transform: `translate(${x + dx}px, ${y + dy}px) scale(${scale})` }}
+            <g key={`${pl}-${pi}`} className={cls} style={{ transform: `translate(${x}px, ${y}px)` }}
               {...(can ? {
                 role: 'button', tabIndex: 0, 'aria-label': label, 'aria-pressed': selected === pi,
                 onClick: () => onSelect(pi),

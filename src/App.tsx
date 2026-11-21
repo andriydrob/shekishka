@@ -82,7 +82,7 @@ function describe(prev: State, next: State, a: Action, who: string): string | nu
   const capturedBefore = prev.pieces.flat().filter((p) => p.at === 'captured' && p.by === me).length
   const capturedNow = next.pieces.flat().filter((p) => p.at === 'captured' && p.by === me).length
   const parts: string[] = []
-  if (was.at === 'home') parts.push('фішка виходить на поле')
+  if (was.at === 'home') parts.push('фішка входить у гру')
   else if (was.at === 'captured') parts.push('фішку викуплено')
   else if (now.at === 'jail' && was.at !== 'jail') parts.push('фішка потрапляє в тюрму')
   else if (was.at === 'jail' && now.at === 'jail') parts.push(`у тюрмі: ${now.stage === 1 ? '3' : '6'}`)
@@ -168,7 +168,7 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
   // які дії відповідають натиснутій фішці (домашні фішки взаємозамінні)
   const actionsFor = (pi: number) => {
     const at = game.pieces[me][pi].at
-    return legal.filter((m) => m.action.type === 'use' && (m.action.piece === pi || (at === 'home' && game.pieces[me][m.action.piece].at === 'home')))
+    return legal.filter((m) => m.action.type === 'use' && (m.action.piece === pi || ((at === 'home' || at === 'ready') && game.pieces[me][m.action.piece].at === at)))
   }
   const selectable = new Set(isHuman ? game.pieces[me].map((_, i) => i).filter((i) => game.pieces[me][i].at !== 'captured' && actionsFor(i).length) : [])
   const targets: Target[] = selected === null || !isHuman ? [] : actionsFor(selected).flatMap((m) => {
@@ -199,7 +199,7 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
                 <span key={i} className={`chip ${p.at}`} style={{ background: PLAYER_COLORS[humanIdx] }} title={p.at} />
               ))}
             </div>
-            <p className="muted">Вдома {count('home')} · у грі {count('ring') + count('jail')} · в полоні {count('captured')} · фініш {count('done')}</p>
+            <p className="muted">Вдома {count('home')} · у грі {count('ready') + count('ring') + count('jail')} · в полоні {count('captured')} · фініш {count('done')}</p>
           </div>
         )}
         <button className="btn" disabled={!buyback} onClick={() => buyback && act(buyback.action)}>Викупити</button>

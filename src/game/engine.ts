@@ -2,6 +2,7 @@ import { JUMP, RING, mod, special, startIdx, type Side } from './board'
 
 export type Piece =
   | { at: 'home' }
+  | { at: 'ready' } // вийшла шісткою: ще в рукаві, клітинка під рукавом = перший крок
   | { at: 'ring'; p: number } // p = прогрес від своєї стартової клітинки (може бути −1 після «В»)
   | { at: 'jail'; p: number; stage: 0 | 1 | 2; since: number } // p = клітинка зі стрілкою
   | { at: 'captured'; by: number } // лежить в інвентарі гравця by
@@ -18,6 +19,7 @@ export interface State {
   dice: [number, number] | null
   used: [boolean, boolean]
   winner: number | null
+  frozen: number | null // фішка поточного гравця, що вже била чи стрибала по П/В: до кінця ходу не ходить
 }
 
 export const PIECES = 4
@@ -45,6 +47,7 @@ export function newGame(players: number, rng: Rng = Math.random): { state: State
       dice: null,
       used: [false, false],
       winner: null,
+      frozen: null,
     },
   }
 }
@@ -65,11 +68,27 @@ function occupant(st: State, idx: number, skip?: [number, number]) {
   return null
 }
 
+// Клітинки тюрми — як звичайні: на чужу фішку стаєш і б'єш, на свою не можна.
+const jailSide = (st: State, pl: number, p: number) => Math.floor(ringIdx(st.sides[pl], p) / 12)
+function enterJailCell(s: State, me: number, pi: number, p: number, stage: 0 | 1 | 2): boolean {
+  const js = jailSide(s, me, p)
+  for (let pl = 0; pl < s.pieces.length; pl++)
+    for (let pc = 0; pc < PIECES; pc++) {
+      const x = s.pieces[pl][pc]
+      if (x.at !== 'jail' || (pl === me && pc === pi) || x.stage !== stage || jailSide(s, pl, x.p) !== js) continue
+      if (pl === me) return false
+      s.pieces[pl][pc] = { at: 'captured', by: me }
+      s.frozen = pi
+    }
+  return true
+}
+
 function endTurn(s: State) {
   s.current = (s.current + 1) % s.sides.length
   s.turn++
   s.dice = null
   s.used = [false, false]
+  s.frozen = null
 }
 
 // Ставить фішку на прогрес q (з захопленням і спецклітинками). false = хід заборонений.
@@ -82,14 +101,17 @@ function placeAt(s: State, me: number, pi: number, q: number): boolean {
     if (!o) return true
     if (o.pl === me || special(idx) === 'corner') return false // на свою не можна; у куті неуразлива
     s.pieces[o.pl][o.pc] = { at: 'captured', by: me }
+    s.frozen = pi
     return true
   }
   if (!land(q)) return false
   const sp = special(ringIdx(side, q))
   if (sp === 'fly' || sp === 'back') {
     q += sp === 'fly' ? JUMP : -JUMP
+    s.frozen = pi
     if (!land(q)) return false
   }
+  if (sp === 'jail' && !enterJailCell(s, me, pi, q, 0)) return false
   s.pieces[me][pi] = sp === 'jail' ? { at: 'jail', p: q, stage: 0, since: s.turn } : { at: 'ring', p: q }
   return true
 }
@@ -112,7 +134,7 @@ function moveFrom(s: State, me: number, pi: number, p: number, n: number): boole
 }
 
 function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
-  if (!st.dice || st.winner !== null || dice.length === 0 || dice.some((i) => st.used[i])) return null
+  if (!st.dice || st.winner !== null || dice.length === 0 || dice.some((i) => st.used[i]) || pi === st.frozen) return null
   if (dice.length === 2 && dice[0] === dice[1]) return null
   const n = dice.reduce((a: number, i) => a + st.dice![i], 0)
   const single = dice.length === 1
@@ -124,16 +146,21 @@ function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
     if (!single || n !== 6) return null
     s.pieces[me][pi] = { at: 'home' } // викуплена фішка йде в рукав; виводити — ще одною 6
   } else if (pc.at === 'home') {
-    if (!single || n !== 6 || !placeAt(s, me, pi, 0)) return null
+    if (!single || n !== 6) return null
+    s.pieces[me][pi] = { at: 'ready' }
+  } else if (pc.at === 'ready') {
+    if (!moveFrom(s, me, pi, -1, n)) return null // від «перед стартом»: 1 = клітинка під рукавом
   } else if (pc.at === 'ring') {
     if (!moveFrom(s, me, pi, pc.p, n)) return null
   } else if (pc.at === 'jail') {
     if (pc.since >= st.turn) return null // кожен крок тюрми лише в наступному кидку
     if (pc.stage === 0) {
       if (!single || n !== 3) return null
+      if (!enterJailCell(s, me, pi, pc.p, 1)) return null
       s.pieces[me][pi] = { ...pc, stage: 1, since: st.turn }
     } else if (pc.stage === 1) {
       if (!single || n !== 6) return null
+      if (!enterJailCell(s, me, pi, pc.p, 2)) return null
       s.pieces[me][pi] = { ...pc, stage: 2, since: st.turn }
     } else if (!moveFrom(s, me, pi, pc.p, n)) return null
   } else return null
@@ -162,7 +189,7 @@ export function legalActions(st: State): { action: Action; next: State }[] {
   const seen = new Set<string>()
   st.pieces[st.current].forEach((pc, piece) => {
     // однакові фішки вдома/в полоні — достатньо однієї
-    const key = pc.at === 'home' ? 'home' : pc.at === 'captured' ? 'cap' : `p${piece}`
+    const key = pc.at === 'home' || pc.at === 'ready' || pc.at === 'captured' ? pc.at : `p${piece}`
     for (const dice of COMBOS) {
       if (dice.length === 1 && dice[0] === 1 && st.dice![0] === st.dice![1] && !st.used[0]) continue // дубль: кубики однакові
       const k = `${key}:${dice.join()}`

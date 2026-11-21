@@ -6,6 +6,7 @@ export type Level = 'easy' | 'medium' | 'hard'
 function value(pc: Piece): number {
   switch (pc.at) {
     case 'home': return 0
+    case 'ready': return 12
     case 'captured': return -6
     case 'jail': return 6 + pc.stage * 4 + pc.p * 0.5
     case 'ring': return 14 + pc.p
