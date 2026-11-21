@@ -1,6 +1,6 @@
 // Онлайн-кімната: чисті функції над станом. Сервер (api/room.ts) лише зберігає Room і викликає їх.
 import { autoplay } from './bot.js'
-import { apply, newGame, roll, type Action, type State } from './engine.js'
+import { apply, legalActions, newGame, roll, type Action, type State } from './engine.js'
 
 export const TURN_SECONDS = [15, 30, 45, 60, 0]
 
@@ -13,7 +13,10 @@ export interface Room {
   opening: number[]
   version: number
   deadline: number // мс; 0 = без ліміту
+  moves?: Move[] // останні ходи, щоб інші гравці бачили, як фішка йде (у старих кімнатах поля нема)
 }
+export interface Move { v: number; before: State; action: Action }
+const MOVES_KEPT = 6
 export type PublicRoom = Omit<Room, 'tokens'> & { joined: number; now: number }
 export type Op = { op: 'roll' } | { op: 'act'; action: Action }
 
@@ -42,10 +45,12 @@ export function play(r: Room, seat: number, token: string, op: Op, now: number):
   const turn = r.state.turn
   if (op.op === 'roll') {
     if (r.state.dice) return 'Кубики вже кинуто'
+    if (legalActions(r.state).length) return 'Спершу зроби 6 кроків за викуп'
     r.state = roll(r.state)
   } else {
     const next = apply(r.state, op.action)
     if (!next) return 'Такий хід неможливий'
+    r.moves = [...(r.moves ?? []), { v: r.version + 1, before: r.state, action: op.action }].slice(-MOVES_KEPT)
     r.state = next
   }
   if (r.state.turn !== turn) resetDeadline(r, now)
@@ -74,8 +79,10 @@ export function parseOp(body: unknown): Op | null {
   if (b?.op !== 'act' || !b.action) return null
   const a = b.action
   if (a.type === 'pass') return { op: 'act', action: { type: 'pass' } }
+  if (!Number.isInteger(a.piece) || (a.piece as number) < 0 || (a.piece as number) > 3) return null
+  if (a.type === 'bonus') return { op: 'act', action: { type: 'bonus', piece: a.piece as number } }
   const dice = a.dice
-  if (a.type !== 'use' || !Number.isInteger(a.piece) || (a.piece as number) < 0 || (a.piece as number) > 3) return null
+  if (a.type !== 'use') return null
   if (!Array.isArray(dice) || dice.length < 1 || dice.length > 2 || !dice.every((d) => d === 0 || d === 1)) return null
   return { op: 'act', action: { type: 'use', piece: a.piece as number, dice: dice as (0 | 1)[] } }
 }

@@ -61,10 +61,10 @@ export function chooseAction(st: State, level: Level, rng: () => number = Math.r
   return best
 }
 
-// Час вийшов: гра сама кидає кубики й робить випадкові дозволені ходи до кінця ходу.
+// Час вийшов: гра сама робить бонус за викуп, кидає кубики й робить випадкові дозволені ходи до кінця ходу.
 export function autoplay(st: State, rng: () => number = Math.random): State {
-  let s = st.dice ? st : roll(st, rng)
-  const me = s.current
-  while (s.current === me && s.winner === null) s = apply(s, chooseAction(s, 'easy', rng))!
+  const me = st.current
+  let s = st
+  while (s.current === me && s.winner === null) s = s.dice || legalActions(s).length ? apply(s, chooseAction(s, 'easy', rng))! : roll(s, rng)
   return s
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { legalActions, type Action } from './engine'
 import { createRoom, joinRoom, parseOp, play, publicView, tick } from './room'
 
 const T0 = 1_000_000
@@ -24,6 +25,11 @@ describe('онлайн-кімната', () => {
     expect(r.state.dice).not.toBeNull()
     expect(r.version).toBe(v + 1)
     expect(play(r, cur, tok[cur], { op: 'roll' }, T0)).toBe('Кубики вже кинуто')
+    // хід потрапляє в журнал разом зі станом до нього — щоб інші гравці побачили, як фішка йде
+    const before = r.state
+    const a: Action = legalActions(r.state)[0]?.action ?? { type: 'pass' }
+    expect(play(r, cur, tok[cur], { op: 'act', action: a }, T0)).toBeNull()
+    expect(r.moves).toEqual([{ v: r.version, before, action: a }])
   })
 
   it('прострочений хід робиться автоматично', () => {

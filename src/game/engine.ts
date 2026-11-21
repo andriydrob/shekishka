@@ -6,10 +6,19 @@ export type Piece =
   | { at: 'ring'; p: number } // p = прогрес від своєї стартової клітинки (може бути −1 після «В»)
   | { at: 'jail'; p: number; stage: 0 | 1 | 2; since: number } // p = клітинка зі стрілкою
   | { at: 'captured'; by: number } // лежить в інвентарі гравця by
-  | { at: 'done'; slot: number }
+  | { at: 'done'; slot: number } // у рукаві (slot 0 біля кільця, 3 — кінець); фінішна лише коли дійшла до кінця — isFinished
+
+// Фішка в рукаві зараховується, лише коли дійшла до кінця: усі глибші клітинки рукава зайняті своїми.
+export function isFinished(row: Piece[], pi: number): boolean {
+  const pc = row[pi]
+  if (pc.at !== 'done') return false
+  for (let s = pc.slot + 1; s < PIECES; s++) if (!row.some((x) => x.at === 'done' && x.slot === s)) return false
+  return true
+}
 
 export type DieIdx = 0 | 1
-export type Action = { type: 'use'; piece: number; dice: DieIdx[] } | { type: 'pass' }
+// bonus — «6 кроків за викуп»: на початку свого ходу, до кидка
+export type Action = { type: 'use'; piece: number; dice: DieIdx[] } | { type: 'bonus'; piece: number } | { type: 'pass' }
 
 export interface State {
   sides: Side[]
@@ -20,12 +29,16 @@ export interface State {
   used: [boolean, boolean]
   winner: number | null
   frozen: number | null // фішка поточного гравця, що вже била чи стрибала по П/В: до кінця ходу не ходить
+  bonus: number[] // скільки разів у гравця викупили фішку: стільки разів по 6 кроків на початку його ходу
 }
 
 export const PIECES = 4
 // Повне коло закінчується на своїй стартовій клітинці (прогрес 48 = клітинка під рукавом),
 // і лише наступний крок заводить у рукав: прогрес 49..52 = слоти 0..3.
 export const ARM_START = RING + 1
+// вихід з тюрми: клітинка кільця під «6» (стрілка + 2) — це вже крок 1
+export const JAIL_EXIT = 1
+export const BONUS_STEPS = 6
 export const SIDES_BY_COUNT: Record<number, Side[]> = { 2: [2, 0], 3: [2, 3, 0], 4: [2, 3, 0, 1] }
 
 export type Rng = () => number
@@ -48,13 +61,16 @@ export function newGame(players: number, rng: Rng = Math.random): { state: State
       used: [false, false],
       winner: null,
       frozen: null,
+      bonus: sides.map(() => 0),
     },
   }
 }
 
 export function roll(st: State, rng: Rng = Math.random): State {
-  if (st.dice || st.winner !== null) return st
-  return { ...st, dice: [rollDie(rng), rollDie(rng)], used: [false, false] }
+  if (st.dice || st.winner !== null || legalActions(st).length) return st // спершу 6 кроків за викуп
+  const bonus = [...st.bonus]
+  bonus[st.current] = 0 // бонус, яким нема як піти, пропадає
+  return { ...st, bonus, dice: [rollDie(rng), rollDie(rng)], used: [false, false] }
 }
 
 export const ringIdx = (side: Side, p: number) => mod(startIdx(side) + p, RING)
@@ -119,14 +135,14 @@ function placeAt(s: State, me: number, pi: number, q: number): boolean {
 function moveFrom(s: State, me: number, pi: number, p: number, n: number): boolean {
   const q = p + n
   if (q > ARM_START + PIECES - 1) return false // у рукав лише точним числом
-  // по кільцю перестрибувати не можна ні через чужі, ні через свої фішки.
-  // У рукаві можна: інакше фішка на першій клітинці рукава назавжди закриє фініш.
-  for (let k = p + 1; k < q && k < ARM_START; k++) {
-    if (occupant(s, ringIdx(s.sides[me], k), [me, pi])) return false
+  // перестрибувати не можна ні через чужі, ні через свої — ні по кільцю, ні в рукаві
+  const inArm = (slot: number) => s.pieces[me].some((x, i) => i !== pi && x.at === 'done' && x.slot === slot)
+  for (let k = p + 1; k < q; k++) {
+    if (k < ARM_START ? occupant(s, ringIdx(s.sides[me], k), [me, pi]) : inArm(k - ARM_START)) return false
   }
   if (q >= ARM_START) {
     const slot = q - ARM_START
-    if (s.pieces[me].some((x) => x.at === 'done' && x.slot === slot)) return false
+    if (inArm(slot)) return false
     s.pieces[me][pi] = { at: 'done', slot }
     return true
   }
@@ -144,7 +160,9 @@ function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
   if (!pc) return null
   if (pc.at === 'captured') {
     if (!single || n !== 6) return null
-    s.pieces[me][pi] = { at: 'home' } // викуплена фішка йде в рукав; виводити — ще одною 6
+    s.pieces[me][pi] = { at: 'home' } // викуплена фішка йде за дошку; виводити — ще одною 6
+    s.bonus = [...st.bonus]
+    s.bonus[pc.by]++ // тому, в кого викупили — 6 кроків на початку його ходу
   } else if (pc.at === 'home') {
     if (!single || n !== 6) return null
     s.pieces[me][pi] = { at: 'ready' }
@@ -152,6 +170,8 @@ function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
     if (!moveFrom(s, me, pi, -1, n)) return null // від «перед стартом»: 1 = клітинка під рукавом
   } else if (pc.at === 'ring') {
     if (!moveFrom(s, me, pi, pc.p, n)) return null
+  } else if (pc.at === 'done') {
+    if (!moveFrom(s, me, pi, ARM_START + pc.slot, n)) return null // у рукаві ходиш далі до кінця точним числом
   } else if (pc.at === 'jail') {
     if (pc.since >= st.turn) return null // кожен крок тюрми лише в наступному кидку
     if (pc.stage === 0) {
@@ -162,7 +182,7 @@ function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
       if (!single || n !== 6) return null
       if (!enterJailCell(s, me, pi, pc.p, 2)) return null
       s.pieces[me][pi] = { ...pc, stage: 2, since: st.turn }
-    } else if (!moveFrom(s, me, pi, pc.p, n)) return null
+    } else if (!moveFrom(s, me, pi, pc.p + JAIL_EXIT, n)) return null
   } else return null
   for (const i of dice) s.used[i] = true
   if (s.pieces[me].every((x) => x.at === 'done')) s.winner = me
@@ -170,7 +190,23 @@ function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
   return s
 }
 
+// 6 кроків за викуп будь-якою фішкою на полі; вивести з-за дошки чи викупити ними не можна.
+function tryBonus(st: State, pi: number): State | null {
+  const me = st.current
+  if (st.dice || st.winner !== null || !st.bonus[me] || pi === st.frozen) return null
+  const pc = st.pieces[me][pi]
+  const from = pc?.at === 'ready' ? -1 : pc?.at === 'ring' ? pc.p
+    : pc?.at === 'jail' && pc.stage === 2 && pc.since < st.turn ? pc.p + JAIL_EXIT : null
+  if (from === null) return null
+  const s: State = { ...st, bonus: [...st.bonus], pieces: st.pieces.map((row) => [...row]) }
+  if (!moveFrom(s, me, pi, from, BONUS_STEPS)) return null
+  s.bonus[me]--
+  if (s.pieces[me].every((x) => x.at === 'done')) s.winner = me
+  return s
+}
+
 export function apply(st: State, a: Action): State | null {
+  if (a.type === 'bonus') return tryBonus(st, a.piece)
   if (a.type === 'pass') {
     // хід обов'язковий: пропустити можна лише після кидка, коли ходів немає
     if (st.winner !== null || !st.dice || legalActions(st).length > 0) return null
@@ -184,9 +220,22 @@ export function apply(st: State, a: Action): State | null {
 const COMBOS: DieIdx[][] = [[0], [1], [0, 1]]
 
 export function legalActions(st: State): { action: Action; next: State }[] {
-  if (!st.dice || st.winner !== null) return []
+  if (st.winner !== null) return []
   const out: { action: Action; next: State }[] = []
   const seen = new Set<string>()
+  if (!st.dice) {
+    // до кидка ходити можна лише бонусом за викуп
+    st.pieces[st.current].forEach((pc, piece) => {
+      const key = pc.at === 'ready' ? 'ready' : `p${piece}`
+      if (seen.has(key)) return
+      const next = tryBonus(st, piece)
+      if (next) {
+        seen.add(key)
+        out.push({ action: { type: 'bonus', piece }, next })
+      }
+    })
+    return out
+  }
   st.pieces[st.current].forEach((pc, piece) => {
     // однакові фішки вдома/в полоні — достатньо однієї
     const key = pc.at === 'home' || pc.at === 'ready' || pc.at === 'captured' ? pc.at : `p${piece}`

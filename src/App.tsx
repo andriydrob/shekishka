@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { autoplay, chooseAction, type Level } from './game/bot'
-import { ringCell, type Cell } from './game/board'
-import { apply, legalActions, newGame, ringIdx, roll, type Action, type State } from './game/engine'
+import type { Cell } from './game/board'
+import { apply, BONUS_STEPS, isFinished, legalActions, newGame, roll, type Action, type State } from './game/engine'
 import type { Op, PublicRoom } from './game/room'
 import { api, loadCreds, saveCreds, type Creds } from './online'
-import { Board, PLAYER_COLORS, PLAYER_NAMES_COLOR, pieceCell, stopCell, type Hop, type Target } from './ui/Board'
+import { Board, PLAYER_COLORS, PLAYER_NAMES_COLOR, pieceCell, stepCells, stopCell, type Hop, type Kill, type Target } from './ui/Board'
 
 type Seat = 'human' | Level
 interface Settings { players: number; seats: Seat[]; turnSeconds: number; mySeat?: number } // mySeat — лише онлайн
@@ -16,7 +16,11 @@ const TIMES = [15, 30, 45, 60, 0]
 const POLL_MS = 1000
 const BOT_DELAY = 700
 const NO_MOVES_DELAY = 1500 // скільки показувати кубики, коли ходів немає, перед автопропуском
-const HOP_DELAY = 450 // фішка спершу стає на П/В/стрілку, потім стрибає
+const STEP_MS = 180 // фішка йде по клітинці за крок
+const JUMP_PAUSE = 380 // стоїть на П/В/стрілці перед стрибком
+const JUMP_MS = 420 // сам стрибок
+const BOOM_MS = 700 // вибух побитої фішки
+const sameCell = (a: Cell | null | undefined, b: Cell | null | undefined) => !!a && !!b && a.c === b.c && a.r === b.r
 
 const roomFromUrl = () => new URLSearchParams(location.search).get('room')
 
@@ -119,14 +123,15 @@ function describe(prev: State, next: State, a: Action, who: string): string | nu
   else if (was.at === 'captured') parts.push('фішку викуплено')
   else if (now.at === 'jail' && was.at !== 'jail') parts.push('фішка потрапляє в тюрму')
   else if (was.at === 'jail' && now.at === 'jail') parts.push(`у тюрмі: ${now.stage === 1 ? '3' : '6'}`)
-  else if (now.at === 'done') parts.push('фішка вдома!')
+  else if (now.at === 'done') parts.push(isFinished(next.pieces[me], a.piece) ? 'фішка дійшла до кінця рукава!' : 'фішка в рукаві, треба довести до кінця')
   else if (now.at === 'ring' && (was.at === 'ring' || was.at === 'jail')) {
-    const n = a.dice.reduce((s: number, i) => s + prev.dice![i], 0)
+    const n = a.type === 'bonus' ? BONUS_STEPS : a.dice.reduce((s: number, i) => s + prev.dice![i], 0)
     const jump = now.p - (was.p + n)
     if (jump > 0) parts.push('політ по «П»')
     if (jump < 0) parts.push('повернення по «В»')
   }
   if (capturedNow > capturedBefore) parts.push('фішку суперника побито!')
+  if (a.type === 'bonus') parts.unshift('6 кроків за викуп')
   return parts.length ? `${who}: ${parts.join(', ')}` : null
 }
 
@@ -139,8 +144,9 @@ function Online({ id, onMenu }: { id: string; onMenu: () => void }) {
   const joining = useRef(false)
 
   // приймаємо лише новіші версії, щоб запізніла відповідь не відкотила стан
-  const accept = (r: PublicRoom) => {
-    if (r.version < version.current) return
+  // force: сервер відхилив наш хід — повертаємось до його стану навіть за тієї ж версії
+  const accept = (r: PublicRoom, force = false) => {
+    if (r.version < version.current || (r.version === version.current && !force)) return
     version.current = r.version
     setRoom(r)
     setDeadlineLocal(Date.now() + (r.deadline - r.now))
@@ -168,7 +174,7 @@ function Online({ id, onMenu }: { id: string; onMenu: () => void }) {
 
   const send = (op: Op) => {
     if (!creds) return
-    api({ ...op, id, seat: creds.seat, token: creds.token }).then((res) => res.room && accept(res.room))
+    api({ ...op, id, seat: creds.seat, token: creds.token }).then((res) => res.room && accept(res.room, !!res.error))
   }
 
   if (error) return (
@@ -225,6 +231,9 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const [now, setNow] = useState(() => Date.now())
   const [rolling, setRolling] = useState(false)
   const [hop, setHop] = useState<Hop | null>(null)
+  const [kills, setKills] = useState<Kill[]>([])
+  const timers = useRef<number[]>([])
+  const busyUntil = useRef(0)
 
   const me = game.current
   const seat = settings.seats[me]
@@ -232,13 +241,82 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const legal = useMemo(() => legalActions(game), [game])
   const humanIdx = online ? settings.mySeat! : isHuman ? me : settings.seats.indexOf('human')
 
-  // онлайн: сервер — джерело правди; новий стан приходить через опитування
+  // Анімація ходу: фішка йде по клітинках, на П/В/стрілці зупиняється й стрибає;
+  // побита фішка стоїть, доки до неї не дійде нападник, і вибухає. Повертає тривалість у мс.
+  const animate = (prev: State, a: Action, next: State): number => {
+    timers.current.forEach(clearTimeout) // новий хід обриває попередню анімацію
+    timers.current = []
+    setHop(null)
+    setKills([])
+    if (a.type === 'pass') return 0
+    const pl = prev.current, pi = a.piece
+    const at = (ms: number, f: () => void) => timers.current.push(window.setTimeout(f, ms))
+    const steps = stepCells(prev, a)
+    const final = pieceCell(next, pl, pi)
+    const last = (steps.length - 1) * STEP_MS
+    let end = 160
+    steps.forEach((cell, i) => (i ? at(i * STEP_MS, () => setHop({ pl, pi, cell })) : setHop({ pl, pi, cell }))) // перший крок — разом із setGame
+    if (steps.length && final && !sameCell(steps.at(-1), final)) {
+      at(last + JUMP_PAUSE, () => setHop({ pl, pi, cell: final, ms: JUMP_MS }))
+      end = last + JUMP_PAUSE + JUMP_MS
+    } else if (steps.length) end = last + STEP_MS
+    if (steps.length) at(end, () => setHop(null))
+
+    const victims: Kill[] = []
+    prev.pieces.forEach((row, vpl) => row.forEach((pc, vpi) => {
+      const cell = pieceCell(prev, vpl, vpi)
+      if (vpl !== pl && pc.at !== 'captured' && next.pieces[vpl][vpi].at === 'captured' && cell)
+        victims.push({ key: `${vpl}-${vpi}-${next.turn}`, cell, color: PLAYER_COLORS[vpl], boom: false })
+    }))
+    let total = end
+    if (victims.length) {
+      setKills(victims)
+      victims.forEach((v) => {
+        const idx = steps.findIndex((c) => sameCell(c, v.cell))
+        const hit = idx >= 0 ? idx * STEP_MS + 120 : end
+        at(hit, () => setKills((ks) => ks.map((k) => (k.key === v.key ? { ...k, boom: true } : k))))
+        total = Math.max(total, hit + BOOM_MS)
+      })
+      at(total, () => setKills([]))
+    }
+    busyUntil.current = Date.now() + total
+    return total
+  }
+
+  // онлайн: сервер — джерело правди. Чужі ходи з журналу програємо по черзі, потім ставимо стан сервера.
+  const shownVersion = useRef(online?.room.version ?? 0)
+  const gameRef = useRef(game)
+  gameRef.current = game
+  const replay = useRef<{ queue: { prev: State; action: Action; next: State }[]; final: State | null; running: boolean }>({ queue: [], final: null, running: false })
+  const pump = () => {
+    const r = replay.current
+    const m = r.queue.shift()
+    if (!m) {
+      r.running = false
+      if (r.final) {
+        const st = r.final
+        r.final = null
+        if (st.turn !== gameRef.current.turn) setMessage(st.winner === null ? (st.current === settings.mySeat ? 'Твій хід!' : `Хід: ${seatName(settings, st.current)}`) : '')
+        setGame(st)
+      }
+      return
+    }
+    r.running = true
+    const text = describe(m.prev, m.next, m.action, seatName(settings, m.prev.current))
+    if (text) setMessage(text)
+    setGame(m.next)
+    window.setTimeout(pump, animate(m.prev, m.action, m.next) + 150)
+  }
   useEffect(() => {
     if (!online) return
-    const st = online.room.state
-    if (st.turn !== game.turn) setMessage(st.winner === null ? (st.current === settings.mySeat ? 'Твій хід!' : `Хід: ${seatName(settings, st.current)}`) : '')
-    setGame(st)
-  }, [online?.room.version]) // eslint-disable-line react-hooks/exhaustive-deps
+    const room = online.room
+    const fresh = (room.moves ?? []).filter((m) => m.v > shownVersion.current && m.before.current !== settings.mySeat)
+    shownVersion.current = room.version
+    const r = replay.current
+    fresh.forEach((m, i) => r.queue.push({ prev: m.before, action: m.action, next: fresh[i + 1]?.before ?? room.state }))
+    r.final = room.state
+    if (!r.running) pump()
+  }, [online?.room]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = (a: Action) => {
     const next = apply(game, a)
@@ -248,17 +326,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
     setSelected(null)
     setGame(next)
     online?.send({ op: 'act', action: a })
-    if (a.type !== 'use') return
-    // проміжні клітинки для анімації: вихід із тюрми — через стрілку; П/В/стрілка — зупинка перед стрибком
-    const was = game.pieces[me][a.piece]
-    const path: Cell[] = []
-    if (was.at === 'jail' && was.stage === 2) path.push(ringCell(ringIdx(game.sides[me], was.p)))
-    const stop = stopCell(game, a)
-    const final = pieceCell(next, me, a.piece)
-    if (stop && final && (stop.c !== final.c || stop.r !== final.r)) path.push(stop)
-    // перший крок — одразу разом із setGame, щоб фішка не блимнула на фінальній клітинці
-    path.forEach((cell, i) => (i ? setTimeout(() => setHop({ pl: me, pi: a.piece, cell }), HOP_DELAY * i) : setHop({ pl: me, pi: a.piece, cell })))
-    if (path.length) setTimeout(() => setHop(null), HOP_DELAY * path.length)
+    animate(game, a, next)
   }
   const doRoll = () => {
     setRolling(true)
@@ -288,7 +356,9 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   useEffect(() => {
     if (game.winner !== null) return
     if (seat !== 'human') {
-      const t = setTimeout(() => (game.dice ? act(chooseAction(game, seat)) : doRoll()), BOT_DELAY)
+      // бот чекає, поки дограє анімація попереднього ходу
+      const wait = Math.max(BOT_DELAY, busyUntil.current - Date.now() + 300)
+      const t = setTimeout(() => (game.dice || legal.length ? act(chooseAction(game, seat)) : doRoll()), wait)
       return () => clearTimeout(t)
     }
     if (game.dice && legal.length === 0) {
@@ -301,20 +371,21 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   // які дії відповідають натиснутій фішці (домашні фішки взаємозамінні)
   const actionsFor = (pi: number) => {
     const at = game.pieces[me][pi].at
-    return legal.filter((m) => m.action.type === 'use' && (m.action.piece === pi || ((at === 'home' || at === 'ready') && game.pieces[me][m.action.piece].at === at)))
+    return legal.filter((m) => m.action.type !== 'pass' && (m.action.piece === pi || ((at === 'home' || at === 'ready') && game.pieces[me][m.action.piece].at === at)))
   }
   const selectable = new Set(isHuman ? game.pieces[me].map((_, i) => i).filter((i) => game.pieces[me][i].at !== 'captured' && actionsFor(i).length) : [])
   const targets: Target[] = selected === null || !isHuman ? [] : actionsFor(selected).flatMap((m) => {
-    if (m.action.type !== 'use') return []
+    if (m.action.type === 'pass') return []
     const cell = stopCell(game, m.action) ?? pieceCell(m.next, me, m.action.piece)
-    const label = String(m.action.dice.reduce((s: number, i) => s + game.dice![i], 0))
+    const label = String(m.action.type === 'bonus' ? BONUS_STEPS : m.action.dice.reduce((s: number, i) => s + game.dice![i], 0))
     const prisoners = (st: State) => st.pieces.flat().filter((p) => p.at === 'captured' && p.by === me).length
     const capture = prisoners(m.next) > prisoners(game)
-    return cell ? [{ key: m.action.dice.join(), cell, label, capture, onPick: () => act(m.action) }] : []
+    return cell ? [{ key: m.action.type === 'bonus' ? 'bonus' : m.action.dice.join(), cell, label, capture, onPick: () => act(m.action) }] : []
   })
   const buyback = isHuman ? legal.find((m) => m.action.type === 'use' && game.pieces[me][m.action.piece].at === 'captured') : undefined
 
   const myPieces = humanIdx >= 0 ? game.pieces[humanIdx] : []
+  const finished = myPieces.filter((_, i) => isFinished(myPieces, i)).length
   const count = (at: string) => myPieces.filter((p) => p.at === at).length
 
   return (
@@ -323,23 +394,23 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
         <div className={`dice ${rolling ? 'rolling' : ''}`} aria-live="polite" aria-label={game.dice ? `Кубики: ${game.dice.join(' і ')}` : 'Кубики ще не кинуто'}>
           {(game.dice ?? [0, 0]).map((v, i) => <Die key={i} value={v} used={!!game.dice && game.used[i]} />)}
         </div>
-        <button className="btn primary" disabled={!isHuman || !!game.dice} onClick={doRoll}>Кинути кубики</button>
+        <button className="btn primary" disabled={!isHuman || !!game.dice || legal.length > 0} onClick={doRoll}>Кинути кубики</button>
         {humanIdx >= 0 && (
           <div className="mine">
             <h2>{isHuman ? `Хід: ${seatName(settings, me)}` : 'Твої фішки'}</h2>
             <div className="chips" aria-label="Стан фішок">
               {myPieces.map((p, i) => (
-                <span key={i} className={`chip ${p.at}`} style={{ background: PLAYER_COLORS[humanIdx] }} title={p.at} />
+                <span key={i} className={`chip ${isFinished(myPieces, i) ? 'done' : p.at === 'done' ? 'ring' : p.at}`} style={{ background: PLAYER_COLORS[humanIdx] }} title={p.at} />
               ))}
             </div>
-            <p className="muted">Вдома {count('home')} · у грі {count('ready') + count('ring') + count('jail')} · в полоні {count('captured')} · фініш {count('done')}</p>
+            <p className="muted">Вдома {count('home')} · у грі {count('ready') + count('ring') + count('jail') + count('done') - finished} · в полоні {count('captured')} · фініш {finished}</p>
           </div>
         )}
         <button className="btn" disabled={!buyback} onClick={() => buyback && act(buyback.action)}>Викупити</button>
       </aside>
 
       <main className="board-wrap">
-        <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} />
+        <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} kills={kills} />
       </main>
 
       <aside className="side right">
@@ -354,7 +425,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
         <ol className="players">
           {game.sides.map((_, pl) => {
             const prisoners = game.pieces.flat().filter((p) => p.at === 'captured' && p.by === pl)
-            const done = game.pieces[pl].filter((p) => p.at === 'done').length
+            const done = game.pieces[pl].filter((_, i) => isFinished(game.pieces[pl], i)).length
             return (
               <li key={pl} className={pl === me ? 'active' : ''} aria-current={pl === me ? 'true' : undefined}>
                 <span className="dot" style={{ background: PLAYER_COLORS[pl] }} aria-hidden />
@@ -369,7 +440,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
           })}
         </ol>
         <p className="message" aria-live="polite">{message}</p>
-        {isHuman && game.dice && selected === null && legal.length > 0 && <p className="muted hint">Торкнись фішки, яка світиться</p>}
+        {isHuman && selected === null && legal.length > 0 && <p className="muted hint">{game.dice ? 'Торкнись фішки, яка світиться' : 'У тебе викупили фішку: спершу зроби 6 кроків будь-якою фішкою'}</p>}
         <button className="btn" disabled={!isHuman || !game.dice || legal.length > 0} onClick={() => act({ type: 'pass' })}>Пропустити хід</button>
       </aside>
 

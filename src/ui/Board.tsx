@@ -1,11 +1,14 @@
-import { POS, RING, SIZE, armCell, jailCell, jailLabels, nestCell, ringCell, special, startIdx, type Cell, type Side } from '../game/board'
-import { ARM_START, ringIdx, type Action, type State } from '../game/engine'
+import { POS, RING, SIZE, armCell, jailCell, jailLabels, homeCell, nestCell, ringCell, special, startIdx, type Cell, type Side } from '../game/board'
+import { ARM_START, BONUS_STEPS, JAIL_EXIT, isFinished, ringIdx, type Action, type State } from '../game/engine'
 
 export const PLAYER_COLORS = ['#3b82f6', '#ef4444', '#facc15', '#22c55e']
 export const PLAYER_NAMES_COLOR = ['Синій', 'Червоний', 'Жовтий', 'Зелений']
 
 const U = 10 // розмір клітинки в одиницях SVG
 const center = (c: Cell) => ({ x: c.c * U + U / 2, y: c.r * U + U / 2 })
+
+// Порядковий номер фішки серед своїх фішок у тому самому стані (home/ready).
+const orderOf = (st: State, pl: number, pi: number) => st.pieces[pl].filter((x, i) => i < pi && x.at === st.pieces[pl][pi].at).length
 
 // Де стоїть фішка; null — у полоні (показується в інвентарі).
 export function pieceCell(st: State, pl: number, pi: number): Cell | null {
@@ -16,34 +19,32 @@ export function pieceCell(st: State, pl: number, pi: number): Cell | null {
     case 'jail': return jailCell((Math.floor(ringIdx(side, pc.p) / 12)) as Side, pc.stage)
     case 'done': return armCell(side, pc.slot)
     case 'captured': return null
-    case 'home': {
-      // до шістки фішки чекають у будиночку біля рукава
-      const order = st.pieces[pl].map((x, i) => (x.at === 'home' ? i : -1)).filter((i) => i >= 0)
-      return nestCell(side, order.indexOf(pi))
-    }
-    case 'ready': {
-      // введені шісткою стоять у рукаві на вільних клітинках, ближчих до кільця
-      const used = new Set(st.pieces[pl].flatMap((x) => (x.at === 'done' ? [x.slot] : [])))
-      const free = [0, 1, 2, 3].filter((s) => !used.has(s))
-      const order = st.pieces[pl].map((x, i) => (x.at === 'ready' ? i : -1)).filter((i) => i >= 0)
-      return armCell(side, free[order.indexOf(pi)])
-    }
+    // до шістки — за межами дошки; після шістки — у будиночку біля рукава (рукав лише для фінішу)
+    case 'home': return homeCell(side, orderOf(st, pl, pi))
+    case 'ready': return nestCell(side, orderOf(st, pl, pi))
   }
 }
 
 // Клітинка, де фішка зупиняється за кубиками (до польоту по П/В чи заходу в тюрму).
 // null — коли ціль і є фінальна клітинка (вихід, викуп, кроки в тюрмі).
-export function stopCell(st: State, a: Action): Cell | null {
-  if (a.type !== 'use' || !st.dice) return null
+// Клітинки, які фішка проходить крок за кроком — від першого кроку до клітинки зупинки.
+export function stepCells(st: State, a: Action): Cell[] {
+  if (a.type === 'pass') return []
   const me = st.current
+  const side = st.sides[me]
   const pc = st.pieces[me][a.piece]
-  const from = pc.at === 'ready' ? -1 : pc.at === 'ring' || (pc.at === 'jail' && pc.stage === 2) ? pc.p : null
-  if (from === null) return null
-  const q = from + a.dice.reduce((s: number, i) => s + st.dice![i], 0)
-  return q >= ARM_START ? armCell(st.sides[me], q - ARM_START) : ringCell(ringIdx(st.sides[me], q))
+  const from = pc.at === 'ready' ? -1 : pc.at === 'ring' ? pc.p : pc.at === 'done' ? ARM_START + pc.slot : pc.at === 'jail' && pc.stage === 2 ? pc.p + JAIL_EXIT : null
+  if (from === null) return []
+  const n = a.type === 'bonus' ? BONUS_STEPS : a.dice.reduce((s: number, i) => s + st.dice![i], 0)
+  return Array.from({ length: n }, (_, i) => {
+    const q = from + 1 + i
+    return q >= ARM_START ? armCell(side, q - ARM_START) : ringCell(ringIdx(side, q))
+  })
 }
+export const stopCell = (st: State, a: Action): Cell | null => stepCells(st, a).at(-1) ?? null
 
-export interface Hop { pl: number; pi: number; cell: Cell }
+export interface Hop { pl: number; pi: number; cell: Cell; ms?: number } // ms — тривалість переходу (довша для стрибка)
+export interface Kill { key: string; cell: Cell; color: string; boom: boolean } // побита фішка: чекає нападника, потім вибухає
 
 export interface Target { key: string; cell: Cell; label: string; capture: boolean; onPick: () => void }
 
@@ -53,17 +54,18 @@ interface Props {
   selected: number | null
   onSelect: (pi: number) => void
   targets: Target[]
-  hop: Hop | null // фішка, що зараз стоїть на П/В/стрілці перед стрибком
+  hop: Hop | null // фішка, що зараз іде по клітинках
+  kills: Kill[]
 }
 
 const SIDES: Side[] = [0, 1, 2, 3]
 
-export function Board({ state, selectable, selected, onSelect, targets, hop }: Props) {
+export function Board({ state, selectable, selected, onSelect, targets, hop, kills }: Props) {
   const ring = Array.from({ length: RING }, (_, i) => i)
   const owner = (side: Side) => state.sides.indexOf(side)
 
   return (
-    <svg className="board" viewBox={`-3 -3 ${SIZE * U + 6} ${SIZE * U + 6}`} role="img" aria-label="Ігрове поле">
+    <svg className="board" viewBox={`-12 -12 ${SIZE * U + 24} ${SIZE * U + 24}`} role="img" aria-label="Ігрове поле">
       <defs>
         <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stopColor="#e2bf8d" />
@@ -146,14 +148,16 @@ export function Board({ state, selectable, selected, onSelect, targets, hop }: P
       {/* фішки */}
       {state.pieces.map((row, pl) =>
         row.map((pc, pi) => {
-          const cell = hop && hop.pl === pl && hop.pi === pi ? hop.cell : pieceCell(state, pl, pi)
+          const hopping = hop && hop.pl === pl && hop.pi === pi ? hop : null
+          const cell = hopping ? hopping.cell : pieceCell(state, pl, pi)
           if (!cell) return null
           const { x, y } = center(cell)
           const can = pl === state.current && selectable.has(pi)
-          const cls = ['piece', can && 'can', selected === pi && pl === state.current && 'sel', pc.at === 'done' && 'done', pc.at === 'ready' && 'ready'].filter(Boolean).join(' ')
+          const fin = isFinished(row, pi)
+          const cls = ['piece', can && 'can', selected === pi && pl === state.current && 'sel', fin && 'done', pc.at === 'ready' && 'ready'].filter(Boolean).join(' ')
           const label = `${PLAYER_NAMES_COLOR[pl]} фішка ${pi + 1}`
           return (
-            <g key={`${pl}-${pi}`} className={cls} style={{ transform: `translate(${x}px, ${y}px)` }}
+            <g key={`${pl}-${pi}`} className={cls} style={{ transform: `translate(${x}px, ${y}px)`, transitionDuration: hopping?.ms ? `${hopping.ms}ms` : undefined }}
               {...(can ? {
                 role: 'button', tabIndex: 0, 'aria-label': label, 'aria-pressed': selected === pi,
                 onClick: () => onSelect(pi),
@@ -162,11 +166,32 @@ export function Board({ state, selectable, selected, onSelect, targets, hop }: P
               <circle r={U / 2} fill="transparent" />
               <circle r={3.3} fill={PLAYER_COLORS[pl]} className="body" />
               <circle r={3.3} fill="url(#shine)" />
-              {pc.at === 'done' && <path d="M-1.6 0.1L-0.4 1.3L1.7 -1.2" className="check" />}
+              {fin && <path d="M-1.6 0.1L-0.4 1.3L1.7 -1.2" className="check" />}
             </g>
           )
         }),
       )}
+      {/* побиті фішки: стоять, доки не дійде нападник, потім вибух */}
+      {kills.map((k) => {
+        const { x, y } = center(k.cell)
+        return (
+          <g key={k.key} className={`kill ${k.boom ? 'boom' : ''}`} style={{ transform: `translate(${x}px, ${y}px)` }} aria-hidden>
+            {k.boom && <circle r={3.3} className="flash" />}
+            <g className="victim">
+              <circle r={3.3} fill={k.color} className="body" />
+              <circle r={3.3} fill="url(#shine)" />
+            </g>
+            {k.boom && (
+              <>
+                <circle r={3.3} className="shock" />
+                {Array.from({ length: 8 }, (_, i) => (
+                  <g key={i} transform={`rotate(${i * 45})`}><line className="spark" x1="0" y1="-3.6" x2="0" y2="-6.4" /></g>
+                ))}
+              </>
+            )}
+          </g>
+        )
+      })}
       {/* цілі ходу — поверх фішок, щоб можна було натиснути на фішку суперника */}
       {targets.map((t) => {
         const { x, y } = center(t.cell)

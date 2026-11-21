@@ -137,7 +137,7 @@ button, select { font: inherit; color: inherit; }
 .jail-arrow { fill: none; stroke: var(--ink); stroke-width: 0.7; }
 .routes line { stroke-width: 0.6; opacity: 0.85; }
 
-.piece { transition: transform 380ms var(--ease-out); }
+.piece { transition: transform 150ms var(--ease-out); }
 .piece .body { stroke: rgba(255,255,255,.85); stroke-width: 0.5; }
 .piece.done .body { stroke: #ffd36b; stroke-width: 0.8; }
 .piece.ready .body { stroke: #8dffa0; stroke-width: 0.9; filter: drop-shadow(0 0 1.6px #8dffa0); }
@@ -189,8 +189,27 @@ button, select { font: inherit; color: inherit; }
   .side { gap: 8px; }
   .message { font-size: 13px; }
 }
+/* вбивство фішки */
+.kill .victim .body { stroke: rgba(255,255,255,.85); stroke-width: 0.5; }
+.kill .victim, .kill .shock, .kill .flash { transform-box: fill-box; transform-origin: center; }
+.kill.boom .victim { animation: victim-die 650ms cubic-bezier(.55, 0, 1, .45) forwards; }
+.kill .flash { fill: #ff2d2d; animation: flash 450ms var(--ease-out) forwards; }
+.kill .shock { fill: none; stroke: #e01818; stroke-width: 1.8; animation: shock 600ms var(--ease-out) forwards; }
+.kill .spark { stroke: #ff6a00; stroke-width: 1.2; stroke-linecap: round; animation: spark 550ms var(--ease-out) forwards; }
+@keyframes victim-die {
+  0% { transform: scale(1); }
+  15% { transform: scale(1.45) rotate(-15deg); filter: brightness(2); }
+  100% { transform: scale(0) rotate(60deg); opacity: 0; }
+}
+@keyframes flash { from { transform: scale(0.9); opacity: 0.8; } to { transform: scale(2.6); opacity: 0; } }
+@keyframes shock { from { transform: scale(0.7); opacity: 1; } to { transform: scale(3.2); opacity: 0; stroke-width: 0.3; } }
+@keyframes spark { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-6px); opacity: 0; } }
+
 @media (prefers-reduced-motion: reduce) {
   .piece, .btn, .die { transition: none; }
+  .kill .shock, .kill .spark, .kill .flash { display: none; }
+  .kill.boom .victim { animation: victim-fade 300ms forwards; }
+  @keyframes victim-fade { to { opacity: 0; } }
   .dice.rolling .die, .piece.can .body { animation: none; }
 }
 

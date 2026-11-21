@@ -42,5 +42,7 @@ export const armCell = (side: Side, slot: number) => innerCell(side, POS.start, 
 // Тюрма: stage 0 = «Т», 1 = «3», 2 = «6».
 export const jailCell = (side: Side, stage: number) => innerCell(side, POS.jail + stage, 1)
 export const jailLabels = ['Т', '3', '6']
-// Будиночок: стовпчик із 4 місць поруч із рукавом (поза клітинками поля), тут фішки чекають на шістку.
+// Будиночок: стовпчик із 4 місць поруч із рукавом — сюди фішка стає після шістки й звідси виходить на кільце.
 export const nestCell = (side: Side, k: number) => innerCell(side, POS.start - 1, 1 + k)
+// Поза дошкою: ряд із 4 місць за краєм навпроти рукава — тут фішки чекають на шістку.
+export const homeCell = (side: Side, k: number) => innerCell(side, POS.start - 2 + k, -1.3)
