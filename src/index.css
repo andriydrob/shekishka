@@ -161,6 +161,8 @@ button, select { font: inherit; color: inherit; }
 .overlay .panel { text-align: center; display: flex; flex-direction: column; gap: 18px; }
 .overlay h2 { font-size: 48px; }
 .row { display: flex; gap: 12px; justify-content: center; }
+.row .btn.big { white-space: nowrap; }
+@media (max-width: 480px) { .row .btn.big { padding: 10px 20px; font-size: 26px; } }
 
 /* телефон вертикально: поле зверху, керування під ним */
 @media (orientation: portrait) {
@@ -223,3 +225,4 @@ button, select { font: inherit; color: inherit; }
 .lobby-seats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .lobby-seats li { display: flex; align-items: center; gap: 12px; }
 .lobby-seats li > span:nth-child(2) { flex: 1; }
+.seat-ready { color: var(--primary-hi); font-weight: 700; }

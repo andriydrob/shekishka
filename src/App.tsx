@@ -9,7 +9,7 @@ import { Board, PLAYER_COLORS, PLAYER_NAMES_COLOR, pieceCell, stepCells, stopCel
 type Seat = 'human' | Level
 interface Settings { players: number; seats: Seat[]; turnSeconds: number; mySeat?: number } // mySeat — лише онлайн
 interface OnlineProps { room: PublicRoom; deadlineLocal: number; send: (op: Op) => void }
-type Screen = { kind: 'menu' } | { kind: 'bots' } | { kind: 'online-new' } | { kind: 'online'; id: string }
+type Screen = { kind: 'menu' } | { kind: 'bots' } | { kind: 'online-new' } | { kind: 'online'; id: string; fresh?: boolean } // fresh — щойно створена: спершу екран із посиланням
 
 const LEVEL_NAMES: Record<Level, string> = { easy: 'легкий', medium: 'середній', hard: 'важкий' }
 const TIMES = [15, 30, 45, 60, 0]
@@ -41,10 +41,10 @@ export default function App() {
     if (!res.room || res.token === undefined) return alert(res.error ?? 'Не вдалося створити кімнату')
     saveCreds(res.room.id, { seat: 0, token: res.token })
     history.replaceState(null, '', `?room=${res.room.id}`)
-    setScreen({ kind: 'online', id: res.room.id })
+    setScreen({ kind: 'online', id: res.room.id, fresh: true })
   }
 
-  if (screen.kind === 'online') return <Online id={screen.id} onMenu={toMenu} />
+  if (screen.kind === 'online') return <Online id={screen.id} fresh={screen.fresh} onMenu={toMenu} />
   if (screen.kind === 'online-new') return <Setup online onBack={toMenu} onStart={createRoom} />
   if (screen.kind === 'bots')
     return settings
@@ -135,8 +135,9 @@ function describe(prev: State, next: State, a: Action, who: string): string | nu
   return parts.length ? `${who}: ${parts.join(', ')}` : null
 }
 
-function Online({ id, onMenu }: { id: string; onMenu: () => void }) {
+function Online({ id, fresh, onMenu }: { id: string; fresh?: boolean; onMenu: () => void }) {
   const [creds, setCreds] = useState<Creds | null>(() => loadCreds(id))
+  const [shared, setShared] = useState(!fresh)
   const [room, setRoom] = useState<PublicRoom | null>(null)
   const [deadlineLocal, setDeadlineLocal] = useState(0)
   const [error, setError] = useState('')
@@ -172,9 +173,10 @@ function Online({ id, onMenu }: { id: string; onMenu: () => void }) {
     return () => clearInterval(t)
   }, [creds]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const send = (op: Op) => {
+  const send = async (op: Op) => {
     if (!creds) return
-    api({ ...op, id, seat: creds.seat, token: creds.token }).then((res) => res.room && accept(res.room, !!res.error))
+    const res = await api({ ...op, id, seat: creds.seat, token: creds.token })
+    if (res.room) accept(res.room, !!res.error)
   }
 
   if (error) return (
@@ -185,39 +187,83 @@ function Online({ id, onMenu }: { id: string; onMenu: () => void }) {
     </main>
   )
   if (!room || !creds) return <main className="setup"><p>Підключення…</p></main>
-  if (room.joined < room.players) return <Lobby room={room} mySeat={creds.seat} onMenu={onMenu} />
+  const link = `${location.origin}${location.pathname}?room=${room.id}`
+  if (!shared) return <ShareLink room={room} link={link} onNext={() => setShared(true)} onMenu={onMenu} />
+  const playing = room.joined === room.players && (room.ready?.every(Boolean) ?? true)
+  if (!playing) return <WaitingRoom room={room} link={link} mySeat={creds.seat} send={send} onMenu={onMenu} />
   return (
     <Game key={id} settings={{ players: room.players, seats: Array(room.players).fill('human'), turnSeconds: room.turnSeconds, mySeat: creds.seat }}
       online={{ room, deadlineLocal, send }} onMenu={onMenu} onRestart={onMenu} />
   )
 }
 
-function Lobby({ room, mySeat, onMenu }: { room: PublicRoom; mySeat: number; onMenu: () => void }) {
-  const link = `${location.origin}${location.pathname}?room=${room.id}`
+function CopyLink({ link, label = 'Копіювати' }: { link: string; label?: string }) {
   const [copied, setCopied] = useState(false)
   const copy = () => navigator.clipboard?.writeText(link).then(() => setCopied(true), () => {})
+  return <button className="btn" onClick={copy}>{copied ? 'Скопійовано' : label}</button>
+}
+
+// Крок 1 (лише для того, хто створив): посилання, яке треба надіслати другу.
+function ShareLink({ room, link, onNext, onMenu }: { room: PublicRoom; link: string; onNext: () => void; onMenu: () => void }) {
   return (
     <main className="setup">
       <h1>Шекішка</h1>
-      <section className="panel" aria-labelledby="lobby-h">
-        <h2 id="lobby-h">Кімната {room.id}</h2>
-        <p className="muted">Надішли це посилання друзям. Гра почнеться, коли всі зайдуть.</p>
+      <section className="panel" aria-labelledby="share-h">
+        <h2 id="share-h">Кімната {room.id}</h2>
+        <p className="muted">Надішли це посилання другу, потім переходь у кімнату й чекай його там.</p>
         <div className="link-row">
           <input readOnly value={link} aria-label="Посилання на кімнату" onFocus={(e) => e.target.select()} />
-          <button className="btn" onClick={copy}>{copied ? 'Скопійовано' : 'Копіювати'}</button>
+          <CopyLink link={link} />
         </div>
-        {'share' in navigator && <button className="btn primary" onClick={() => navigator.share({ title: 'Шекішка', text: 'Заходь пограти в Шекішку!', url: link }).catch(() => {})}>Поділитися</button>}
-        <ul className="lobby-seats">
-          {Array.from({ length: room.players }, (_, i) => (
-            <li key={i}>
-              <span className="dot" style={{ background: PLAYER_COLORS[i] }} aria-hidden />
-              <span>{PLAYER_NAMES_COLOR[i]}{i === mySeat ? ' (ти)' : ''}</span>
-              <span className="muted">{i < room.joined ? 'у кімнаті' : 'чекаємо…'}</span>
-            </li>
-          ))}
-        </ul>
+        {'share' in navigator && <button className="btn" onClick={() => navigator.share({ title: 'Шекішка', text: 'Заходь пограти в Шекішку!', url: link }).catch(() => {})}>Поділитися</button>}
       </section>
-      <button className="btn big" onClick={onMenu}>Меню</button>
+      <div className="row">
+        <button className="btn big" onClick={onMenu}>Меню</button>
+        <button className="btn primary big" onClick={onNext}>Далі в кімнату</button>
+      </div>
+    </main>
+  )
+}
+
+// Крок 2: кімната очікування. Гра починається, коли всі зайшли й натиснули «Я готовий».
+function WaitingRoom({ room, link, mySeat, send, onMenu }: { room: PublicRoom; link: string; mySeat: number; send: (op: Op) => Promise<void>; onMenu: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const ready = room.ready ?? []
+  const iAmReady = !!ready[mySeat]
+  const toggle = () => {
+    setBusy(true)
+    send({ op: 'ready', ready: !iAmReady }).finally(() => setBusy(false))
+  }
+  const waitingFor = room.players - room.joined
+  return (
+    <main className="setup">
+      <h1>Шекішка</h1>
+      <section className="panel" aria-labelledby="wait-h">
+        <h2 id="wait-h">Кімната очікування</h2>
+        <ul className="lobby-seats" aria-live="polite">
+          {Array.from({ length: room.players }, (_, i) => {
+            const status = i >= room.joined ? 'чекаємо…' : ready[i] ? 'готовий ✓' : 'у кімнаті'
+            return (
+              <li key={i}>
+                <span className="dot" style={{ background: PLAYER_COLORS[i] }} aria-hidden />
+                <span>{PLAYER_NAMES_COLOR[i]}{i === mySeat ? ' (ти)' : ''}</span>
+                <span className={i < room.joined && ready[i] ? 'seat-ready' : 'muted'}>{status}</span>
+              </li>
+            )
+          })}
+        </ul>
+        <p className="muted">
+          {waitingFor > 0 ? `Чекаємо ще ${waitingFor === 1 ? 'одного гравця' : `${waitingFor} гравців`}. ` : ''}
+          Гра почнеться, коли всі зайдуть і натиснуть «Я готовий».
+        </p>
+        {waitingFor > 0 && <CopyLink link={link} label="Скопіювати посилання ще раз" />}
+      </section>
+      <div className="row">
+        <button className="btn big" onClick={onMenu}>Меню</button>
+        <button className={`btn big ${iAmReady ? '' : 'primary'}`} disabled={busy} aria-pressed={iAmReady} onClick={toggle}>
+          {iAmReady ? 'Я не готовий' : 'Я готовий'}
+        </button>
+      </div>
     </main>
   )
 }

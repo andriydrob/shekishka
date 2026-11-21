@@ -9,6 +9,7 @@ export interface Room {
   players: number
   turnSeconds: number
   tokens: string[] // секрет кожного місця; індекс = номер гравця
+  ready?: boolean[] // хто натиснув «Я готовий» (у старих кімнатах поля нема — вони вже грають)
   state: State
   opening: number[]
   version: number
@@ -18,19 +19,21 @@ export interface Room {
 export interface Move { v: number; before: State; action: Action }
 const MOVES_KEPT = 6
 export type PublicRoom = Omit<Room, 'tokens'> & { joined: number; now: number }
-export type Op = { op: 'roll' } | { op: 'act'; action: Action }
+export type Op = { op: 'roll' } | { op: 'act'; action: Action } | { op: 'ready'; ready: boolean }
 
-export const started = (r: Room) => r.tokens.length === r.players
+// гра йде, коли всі зайшли й усі натиснули «Я готовий»
+export const started = (r: Room) => r.tokens.length === r.players && (r.ready?.every(Boolean) ?? true)
 const resetDeadline = (r: Room, now: number) => (r.deadline = r.turnSeconds && started(r) ? now + r.turnSeconds * 1000 : 0)
 
 export function createRoom(id: string, players: number, turnSeconds: number, hostToken: string, rng?: () => number): Room {
   const { state, opening } = newGame(players, rng)
-  return { id, players, turnSeconds, tokens: [hostToken], state, opening, version: 1, deadline: 0 }
+  return { id, players, turnSeconds, tokens: [hostToken], ready: [false], state, opening, version: 1, deadline: 0 }
 }
 
 export function joinRoom(r: Room, token: string, now: number): number | null {
-  if (started(r)) return null
+  if (r.tokens.length === r.players) return null
   r.tokens.push(token)
+  r.ready?.push(false)
   if (started(r)) resetDeadline(r, now)
   r.version++
   return r.tokens.length - 1
@@ -39,7 +42,14 @@ export function joinRoom(r: Room, token: string, now: number): number | null {
 // Повертає текст помилки або null, якщо хід прийнято.
 export function play(r: Room, seat: number, token: string, op: Op, now: number): string | null {
   if (r.tokens[seat] !== token) return 'Невідомий гравець'
-  if (!started(r)) return 'Чекаємо, поки всі зайдуть'
+  if (op.op === 'ready') {
+    if (started(r) || !r.ready) return 'Гра вже почалась'
+    r.ready[seat] = op.ready
+    if (started(r)) resetDeadline(r, now)
+    r.version++
+    return null
+  }
+  if (!started(r)) return 'Чекаємо, поки всі зайдуть і будуть готові'
   if (r.state.winner !== null) return 'Гру завершено'
   if (r.state.current !== seat) return 'Зараз не твій хід'
   const turn = r.state.turn
@@ -76,6 +86,7 @@ export function publicView(r: Room, now: number): PublicRoom {
 export function parseOp(body: unknown): Op | null {
   const b = body as { op?: unknown; action?: { type?: unknown; piece?: unknown; dice?: unknown } }
   if (b?.op === 'roll') return { op: 'roll' }
+  if (b?.op === 'ready') return { op: 'ready', ready: (body as { ready?: unknown }).ready === true }
   if (b?.op !== 'act' || !b.action) return null
   const a = b.action
   if (a.type === 'pass') return { op: 'act', action: { type: 'pass' } }
