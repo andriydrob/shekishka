@@ -1,35 +1,61 @@
-import { useEffect, useMemo, useState } from 'react'
-import { chooseAction, type Level } from './game/bot'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { autoplay, chooseAction, type Level } from './game/bot'
 import { ringCell, type Cell } from './game/board'
 import { apply, legalActions, newGame, ringIdx, roll, type Action, type State } from './game/engine'
-
-// Час вийшов: гра сама кидає кубики й робить випадкові дозволені ходи до кінця ходу.
-function autoplay(st: State): State {
-  let s = st.dice ? st : roll(st)
-  const me = s.current
-  while (s.current === me && s.winner === null) s = apply(s, chooseAction(s, 'easy'))!
-  return s
-}
+import type { Op, PublicRoom } from './game/room'
+import { api, loadCreds, saveCreds, type Creds } from './online'
 import { Board, PLAYER_COLORS, PLAYER_NAMES_COLOR, pieceCell, stopCell, type Hop, type Target } from './ui/Board'
 
 type Seat = 'human' | Level
-interface Settings { players: number; seats: Seat[]; turnSeconds: number }
+interface Settings { players: number; seats: Seat[]; turnSeconds: number; mySeat?: number } // mySeat — лише онлайн
+interface OnlineProps { room: PublicRoom; deadlineLocal: number; send: (op: Op) => void }
+type Screen = { kind: 'menu' } | { kind: 'bots' } | { kind: 'online-new' } | { kind: 'online'; id: string }
 
 const LEVEL_NAMES: Record<Level, string> = { easy: 'легкий', medium: 'середній', hard: 'важкий' }
 const TIMES = [15, 30, 45, 60, 0]
+const POLL_MS = 1000
 const BOT_DELAY = 700
 const NO_MOVES_DELAY = 1500 // скільки показувати кубики, коли ходів немає, перед автопропуском
 const HOP_DELAY = 450 // фішка спершу стає на П/В/стрілку, потім стрибає
 
+const roomFromUrl = () => new URLSearchParams(location.search).get('room')
+
 export default function App() {
+  const [screen, setScreen] = useState<Screen>(() => {
+    const id = roomFromUrl()
+    return id ? { kind: 'online', id } : { kind: 'menu' }
+  })
   const [settings, setSettings] = useState<Settings | null>(null)
   const [round, setRound] = useState(0)
-  return settings
-    ? <Game key={round} settings={settings} onMenu={() => setSettings(null)} onRestart={() => setRound((r) => r + 1)} />
-    : <Setup onStart={(s) => { setSettings(s); setRound((r) => r + 1) }} />
+  const toMenu = () => {
+    history.replaceState(null, '', location.pathname)
+    setSettings(null)
+    setScreen({ kind: 'menu' })
+  }
+  const createRoom = async (s: Settings) => {
+    const res = await api({ op: 'create', players: s.players, turnSeconds: s.turnSeconds })
+    if (!res.room || res.token === undefined) return alert(res.error ?? 'Не вдалося створити кімнату')
+    saveCreds(res.room.id, { seat: 0, token: res.token })
+    history.replaceState(null, '', `?room=${res.room.id}`)
+    setScreen({ kind: 'online', id: res.room.id })
+  }
+
+  if (screen.kind === 'online') return <Online id={screen.id} onMenu={toMenu} />
+  if (screen.kind === 'online-new') return <Setup online onBack={toMenu} onStart={createRoom} />
+  if (screen.kind === 'bots')
+    return settings
+      ? <Game key={round} settings={settings} onMenu={toMenu} onRestart={() => setRound((r) => r + 1)} />
+      : <Setup onBack={toMenu} onStart={(s) => { setSettings(s); setRound((r) => r + 1) }} />
+  return (
+    <main className="setup">
+      <h1>Шекішка</h1>
+      <button className="btn primary big menu-btn" onClick={() => setScreen({ kind: 'bots' })}>Грати з ботами</button>
+      <button className="btn big menu-btn" onClick={() => setScreen({ kind: 'online-new' })}>Грати онлайн з друзями</button>
+    </main>
+  )
 }
 
-function Setup({ onStart }: { onStart: (s: Settings) => void }) {
+function Setup({ onStart, onBack, online }: { onStart: (s: Settings) => void; onBack: () => void; online?: boolean }) {
   const [players, setPlayers] = useState(2)
   const [seats, setSeats] = useState<Seat[]>(['human', 'medium', 'medium', 'medium'])
   const [turnSeconds, setTurnSeconds] = useState(30)
@@ -43,7 +69,7 @@ function Setup({ onStart }: { onStart: (s: Settings) => void }) {
             <button key={n} role="radio" aria-checked={players === n} onClick={() => setPlayers(n)}>{n}</button>
           ))}
         </div>
-        {seats.slice(0, players).map((seat, i) => (
+        {!online && seats.slice(0, players).map((seat, i) => (
           <label key={i} className="seat">
             <span className="dot" style={{ background: PLAYER_COLORS[i] }} aria-hidden />
             <span>{PLAYER_NAMES_COLOR[i]}</span>
@@ -64,13 +90,19 @@ function Setup({ onStart }: { onStart: (s: Settings) => void }) {
           ))}
         </div>
       </section>
-      <button className="btn primary big" onClick={() => onStart({ players, seats: seats.slice(0, players), turnSeconds })}>Почати гру</button>
+      <div className="row">
+        <button className="btn big" onClick={onBack}>Назад</button>
+        <button className="btn primary big" onClick={() => onStart({ players, seats: seats.slice(0, players), turnSeconds })}>
+          {online ? 'Створити кімнату' : 'Почати гру'}
+        </button>
+      </div>
     </main>
   )
 }
 
 function seatName(settings: Settings, i: number) {
   const seat = settings.seats[i]
+  if (settings.mySeat !== undefined) return i === settings.mySeat ? 'Ти' : PLAYER_NAMES_COLOR[i]
   if (seat !== 'human') return `Бот (${LEVEL_NAMES[seat]})`
   return settings.seats.filter((s) => s === 'human').length === 1 ? 'Ти' : `Гравець ${i + 1}`
 }
@@ -98,8 +130,94 @@ function describe(prev: State, next: State, a: Action, who: string): string | nu
   return parts.length ? `${who}: ${parts.join(', ')}` : null
 }
 
-function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () => void; onRestart: () => void }) {
-  const [opening] = useState(() => newGame(settings.players))
+function Online({ id, onMenu }: { id: string; onMenu: () => void }) {
+  const [creds, setCreds] = useState<Creds | null>(() => loadCreds(id))
+  const [room, setRoom] = useState<PublicRoom | null>(null)
+  const [deadlineLocal, setDeadlineLocal] = useState(0)
+  const [error, setError] = useState('')
+  const version = useRef(0)
+  const joining = useRef(false)
+
+  // приймаємо лише новіші версії, щоб запізніла відповідь не відкотила стан
+  const accept = (r: PublicRoom) => {
+    if (r.version < version.current) return
+    version.current = r.version
+    setRoom(r)
+    setDeadlineLocal(Date.now() + (r.deadline - r.now))
+  }
+
+  useEffect(() => {
+    if (creds || joining.current) return
+    joining.current = true
+    api({ op: 'join', id }).then((res) => {
+      if (!res.room || res.token === undefined || res.seat === undefined) return setError(res.error ?? 'Не вдалося зайти в кімнату')
+      const c = { seat: res.seat, token: res.token }
+      saveCreds(id, c)
+      setCreds(c)
+      accept(res.room)
+    })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!creds) return
+    const poll = () => api(null, id).then((res) => (res.room ? accept(res.room) : res.error && setError(res.error)))
+    poll()
+    const t = setInterval(poll, POLL_MS)
+    return () => clearInterval(t)
+  }, [creds]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const send = (op: Op) => {
+    if (!creds) return
+    api({ ...op, id, seat: creds.seat, token: creds.token }).then((res) => res.room && accept(res.room))
+  }
+
+  if (error) return (
+    <main className="setup">
+      <h1>Шекішка</h1>
+      <p className="panel" role="alert">{error}</p>
+      <button className="btn big" onClick={onMenu}>Меню</button>
+    </main>
+  )
+  if (!room || !creds) return <main className="setup"><p>Підключення…</p></main>
+  if (room.joined < room.players) return <Lobby room={room} mySeat={creds.seat} onMenu={onMenu} />
+  return (
+    <Game key={id} settings={{ players: room.players, seats: Array(room.players).fill('human'), turnSeconds: room.turnSeconds, mySeat: creds.seat }}
+      online={{ room, deadlineLocal, send }} onMenu={onMenu} onRestart={onMenu} />
+  )
+}
+
+function Lobby({ room, mySeat, onMenu }: { room: PublicRoom; mySeat: number; onMenu: () => void }) {
+  const link = `${location.origin}${location.pathname}?room=${room.id}`
+  const [copied, setCopied] = useState(false)
+  const copy = () => navigator.clipboard?.writeText(link).then(() => setCopied(true), () => {})
+  return (
+    <main className="setup">
+      <h1>Шекішка</h1>
+      <section className="panel" aria-labelledby="lobby-h">
+        <h2 id="lobby-h">Кімната {room.id}</h2>
+        <p className="muted">Надішли це посилання друзям. Гра почнеться, коли всі зайдуть.</p>
+        <div className="link-row">
+          <input readOnly value={link} aria-label="Посилання на кімнату" onFocus={(e) => e.target.select()} />
+          <button className="btn" onClick={copy}>{copied ? 'Скопійовано' : 'Копіювати'}</button>
+        </div>
+        {'share' in navigator && <button className="btn primary" onClick={() => navigator.share({ title: 'Шекішка', text: 'Заходь пограти в Шекішку!', url: link }).catch(() => {})}>Поділитися</button>}
+        <ul className="lobby-seats">
+          {Array.from({ length: room.players }, (_, i) => (
+            <li key={i}>
+              <span className="dot" style={{ background: PLAYER_COLORS[i] }} aria-hidden />
+              <span>{PLAYER_NAMES_COLOR[i]}{i === mySeat ? ' (ти)' : ''}</span>
+              <span className="muted">{i < room.joined ? 'у кімнаті' : 'чекаємо…'}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+      <button className="btn big" onClick={onMenu}>Меню</button>
+    </main>
+  )
+}
+
+function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onMenu: () => void; onRestart: () => void; online?: OnlineProps }) {
+  const [opening] = useState(() => (online ? { state: online.room.state, opening: online.room.opening } : newGame(settings.players)))
   const [game, setGame] = useState<State>(opening.state)
   const [selected, setSelected] = useState<number | null>(null)
   const [message, setMessage] = useState(() => `Першим ходить ${seatName(settings, opening.state.current)} (сума ${Math.max(...opening.opening)})`)
@@ -110,9 +228,17 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
 
   const me = game.current
   const seat = settings.seats[me]
-  const isHuman = seat === 'human' && game.winner === null
+  const isHuman = (online ? me === settings.mySeat : seat === 'human') && game.winner === null
   const legal = useMemo(() => legalActions(game), [game])
-  const humanIdx = isHuman ? me : settings.seats.indexOf('human')
+  const humanIdx = online ? settings.mySeat! : isHuman ? me : settings.seats.indexOf('human')
+
+  // онлайн: сервер — джерело правди; новий стан приходить через опитування
+  useEffect(() => {
+    if (!online) return
+    const st = online.room.state
+    if (st.turn !== game.turn) setMessage(st.winner === null ? (st.current === settings.mySeat ? 'Твій хід!' : `Хід: ${seatName(settings, st.current)}`) : '')
+    setGame(st)
+  }, [online?.room.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = (a: Action) => {
     const next = apply(game, a)
@@ -121,6 +247,7 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
     if (text) setMessage(text)
     setSelected(null)
     setGame(next)
+    online?.send({ op: 'act', action: a })
     if (a.type !== 'use') return
     // проміжні клітинки для анімації: вихід із тюрми — через стрілку; П/В/стрілка — зупинка перед стрибком
     const was = game.pieces[me][a.piece]
@@ -136,7 +263,8 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
   const doRoll = () => {
     setRolling(true)
     setTimeout(() => setRolling(false), 450)
-    setGame(roll(game))
+    if (online) online.send({ op: 'roll' })
+    else setGame(roll(game))
   }
 
   // таймер ходу
@@ -146,9 +274,11 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
     return () => clearInterval(t)
   }, [])
   // поки дедлайн не оновився для нового ходу, показуємо повний час
-  const left = !settings.turnSeconds ? null : deadline.turn !== game.turn ? settings.turnSeconds : Math.max(0, Math.ceil((deadline.at - now) / 1000))
+  const left = !settings.turnSeconds ? null
+    : online ? Math.max(0, Math.ceil((online.deadlineLocal - now) / 1000))
+    : deadline.turn !== game.turn ? settings.turnSeconds : Math.max(0, Math.ceil((deadline.at - now) / 1000))
   useEffect(() => {
-    if (!isHuman || left !== 0) return
+    if (online || !isHuman || left !== 0) return // онлайн прострочений хід робить сервер
     setSelected(null)
     setGame(autoplay(game))
     setMessage(`${seatName(settings, me)}: час вийшов, хід зроблено автоматично`)
@@ -248,7 +378,7 @@ function Game({ settings, onMenu, onRestart }: { settings: Settings; onMenu: () 
           <div className="panel">
             <h2 id="win-h" style={{ color: PLAYER_COLORS[game.winner] }}>{seatName(settings, game.winner)} перемагає!</h2>
             <div className="row">
-              <button className="btn primary" autoFocus onClick={onRestart}>Ще раз</button>
+              {!online && <button className="btn primary" autoFocus onClick={onRestart}>Ще раз</button>}
               <button className="btn" onClick={onMenu}>Меню</button>
             </div>
           </div>

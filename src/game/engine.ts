@@ -1,4 +1,4 @@
-import { JUMP, RING, mod, special, startIdx, type Side } from './board'
+import { JUMP, RING, mod, special, startIdx, type Side } from './board.js'
 
 export type Piece =
   | { at: 'home' }

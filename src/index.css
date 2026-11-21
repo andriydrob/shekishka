@@ -193,3 +193,14 @@ button, select { font: inherit; color: inherit; }
   .piece, .btn, .die { transition: none; }
   .dice.rolling .die, .piece.can .body { animation: none; }
 }
+
+/* головне меню й онлайн-лобі */
+.menu-btn { width: min(440px, 100%); }
+.link-row { display: flex; gap: 8px; }
+.link-row input {
+  flex: 1; min-width: 0; min-height: 48px; padding: 0 12px; border-radius: 10px;
+  background: var(--surface-2); color: var(--text); border: 2px solid rgba(255,255,255,.15); font: inherit; font-size: 15px;
+}
+.lobby-seats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lobby-seats li { display: flex; align-items: center; gap: 12px; }
+.lobby-seats li > span:nth-child(2) { flex: 1; }

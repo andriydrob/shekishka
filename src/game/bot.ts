@@ -1,5 +1,5 @@
-import { RING, special } from './board'
-import { legalActions, ringIdx, type Action, type Piece, type State } from './engine'
+import { RING, special } from './board.js'
+import { apply, legalActions, ringIdx, roll, type Action, type Piece, type State } from './engine.js'
 
 export type Level = 'easy' | 'medium' | 'hard'
 
@@ -59,4 +59,12 @@ export function chooseAction(st: State, level: Level, rng: () => number = Math.r
     if (s > bestScore) [best, bestScore] = [m.action, s]
   }
   return best
+}
+
+// Час вийшов: гра сама кидає кубики й робить випадкові дозволені ходи до кінця ходу.
+export function autoplay(st: State, rng: () => number = Math.random): State {
+  let s = st.dice ? st : roll(st, rng)
+  const me = s.current
+  while (s.current === me && s.winner === null) s = apply(s, chooseAction(s, 'easy', rng))!
+  return s
 }
