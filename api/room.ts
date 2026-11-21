@@ -1,15 +1,28 @@
-// Vercel Function: онлайн-кімнати Шекішки. Стан у Upstash Redis; локально (vite dev) — у пам'яті.
-import { Redis } from '@upstash/redis'
+// Vercel Function: онлайн-кімнати Шекішки. Стан у Redis (REDIS_URL з інтеграції Vercel); локально (vite dev) — у пам'яті.
+import { createClient } from 'redis'
 import { createRoom, joinRoom, parseOp, play, publicView, tick, TURN_SECONDS, type Room } from '../src/game/room.js'
 
-const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL
-const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN
-const redis = url && token ? new Redis({ url, token }) : null
+const redisUrl = process.env.REDIS_URL ?? process.env.STORAGE_URL
 const memory: Map<string, Room> = ((globalThis as { __rooms?: Map<string, Room> }).__rooms ??= new Map())
 const TTL = 60 * 60 * 24 // кімната живе добу
 
-const load = async (id: string) => (redis ? await redis.get<Room>(`room:${id}`) : memory.get(id) ?? null)
-const save = async (r: Room) => (redis ? void (await redis.set(`room:${r.id}`, r, { ex: TTL })) : void memory.set(r.id, r))
+// одне з'єднання на «теплий» екземпляр функції
+const connect = () => createClient({ url: redisUrl }).on('error', (e) => console.error('redis', e)).connect()
+let client: ReturnType<typeof connect> | null = null
+function redis() {
+  client ??= connect().catch((e) => { client = null; throw e })
+  return client
+}
+
+const load = async (id: string): Promise<Room | null> => {
+  if (!redisUrl) return memory.get(id) ?? null
+  const raw = await (await redis()).get(`room:${id}`)
+  return raw ? JSON.parse(raw) : null
+}
+const save = async (r: Room) => {
+  if (!redisUrl) return void memory.set(r.id, r)
+  await (await redis()).set(`room:${r.id}`, JSON.stringify(r), { EX: TTL })
+}
 // shortcut: без блокувань — два одночасні записи в одну кімнату: виграє останній. Для покрокової гри вистачає.
 
 const json = (data: unknown, status = 200) =>
@@ -21,7 +34,7 @@ const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) =>
 const validId = (id: unknown): id is string => typeof id === 'string' && /^[a-z2-9]{6}$/.test(id)
 
 function noStore() {
-  return !redis && process.env.VERCEL ? fail('Сервер без бази: підключи Upstash Redis у Vercel → Storage', 500) : null
+  return !redisUrl && process.env.VERCEL ? fail('Сервер без бази: підключи Redis у Vercel → Storage', 500) : null
 }
 
 export async function GET(req: Request) {
