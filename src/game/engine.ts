@@ -78,7 +78,8 @@ export function roll(st: State, rng: Rng = Math.random): State {
   bonus[st.current] = 0 // бонус, яким нема як піти, пропадає
   const dice: [number, number] = [rollDie(rng), rollDie(rng)]
   const history = [...(st.history ?? []), { pl: st.current, dice }].slice(-HISTORY_KEPT)
-  return { ...st, bonus, dice, used: [false, false], history }
+  // frozen: null — фішка, що злетіла по П/В чи била під час 6 кроків за викуп, після кидка знову ходить
+  return { ...st, bonus, dice, used: [false, false], history, frozen: null }
 }
 
 export const ringIdx = (side: Side, p: number) => mod(startIdx(side) + p, RING)
@@ -233,8 +234,10 @@ export function apply(st: State, a: Action): State | null {
     endTurn(s)
     return s
   }
-  // одна фішка на ходу — окремим кубиком не можна, лише сумою (перевіряємо й тут, бо сервер довіряє apply)
-  if (a.dice.length === 1 && st.dice && !st.used[0] && !st.used[1] && legalActions(st).every((m) => m.action.type === 'use' && m.action.dice.length === 2)) return null
+  // правила «одна фішка — сумою» і «обидва не зіграти — більшим» обмежують лише ходи одним кубиком;
+  // перевіряємо й тут, бо сервер довіряє apply
+  if (a.dice.length === 1 && st.dice && !st.used[0] && !st.used[1]
+    && !legalActions(st).some((m) => m.action.type === 'use' && m.action.dice.length === 1 && m.action.dice[0] === a.dice[0])) return null
   return tryUse(st, a.piece, a.dice)
 }
 
@@ -244,6 +247,19 @@ function onlySum(moves: { action: Action; next: State }[]) {
   const sums = moves.filter((m) => m.action.type === 'use' && m.action.dice.length === 2)
   const pieces = new Set(moves.map((m) => m.action.type === 'use' && m.action.piece))
   return pieces.size === 1 && sums.length ? sums : moves
+}
+
+// Обидва кубики зіграти не можна, а будь-який один — можна: ходиш більшим (4 і 5 → лише 5).
+// Якщо можна лише менший — ходиш ним.
+function biggerOnly(st: State, moves: { action: Action; next: State }[]) {
+  const [a, b] = st.dice!
+  if (a === b) return moves
+  const canBoth = moves.some((m) => m.action.type === 'use' && (m.action.dice.length === 2
+    || (m.next.current === st.current && m.next.winner === null && legalActions(m.next).length > 0)))
+  if (canBoth) return moves
+  const big: DieIdx = a > b ? 0 : 1
+  const withBig = moves.filter((m) => m.action.type === 'use' && m.action.dice[0] === big)
+  return withBig.length ? withBig : moves
 }
 
 const COMBOS: DieIdx[][] = [[0], [1], [0, 1]]
@@ -279,5 +295,5 @@ export function legalActions(st: State): { action: Action; next: State }[] {
       }
     }
   })
-  return st.used[0] || st.used[1] ? out : onlySum(out)
+  return st.used[0] || st.used[1] ? out : biggerOnly(st, onlySum(out))
 }

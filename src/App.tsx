@@ -483,6 +483,14 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
     return cell ? [{ key: m.action.type === 'bonus' ? 'bonus' : m.action.dice.join(), cell, label, capture, onPick: () => act(m.action) }] : []
   })
   // по варіанту на кожного, у кого твоя фішка в полоні: від вибору залежить, хто отримає 6 кроків за викуп
+  // підказка, чому доступні не всі кубики
+  const fresh = !!game.dice && !game.used[0] && !game.used[1]
+  const big = game.dice ? Math.max(...game.dice) : 0
+  const hint = !game.dice ? 'У тебе викупили фішку: спершу зроби 6 кроків будь-якою фішкою'
+    : fresh && legal.every((m) => m.action.type === 'use' && m.action.dice.length === 2) ? 'Ходить лише одна фішка — обидва кубики разом'
+      : fresh && game.dice[0] !== game.dice[1] && legal.every((m) => m.action.type === 'use' && m.action.dice.length === 1 && game.dice![m.action.dice[0]] === big
+        && (m.next.current !== me || legalActions(m.next).length === 0)) ? `Обидва кубики не зіграти — ходиш більшим (${big})`
+        : 'Торкнись фішки, яка світиться'
   const buybacks = isHuman ? legal.filter((m) => m.action.type === 'use' && game.pieces[me][m.action.piece].at === 'captured') : []
   const captorOf = (m: (typeof legal)[number]) => { const pc = m.action.type === 'use' ? game.pieces[me][m.action.piece] : null; return pc?.at === 'captured' ? pc.by : -1 }
 
@@ -583,7 +591,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
             </ol>
           </details>
         )}
-        {isHuman && selected === null && legal.length > 0 && <p className="muted hint">{game.dice ? (legal.every((m) => m.action.type === 'use' && m.action.dice.length === 2) && !game.used[0] && !game.used[1] ? 'Ходить лише одна фішка — обидва кубики разом' : 'Торкнись фішки, яка світиться') : 'У тебе викупили фішку: спершу зроби 6 кроків будь-якою фішкою'}</p>}
+        {isHuman && selected === null && legal.length > 0 && <p className="muted hint">{hint}</p>}
       </aside>
 
       {game.winner !== null && (

@@ -162,6 +162,13 @@ describe('правила', () => {
     expect(s.pieces[1][0]).toEqual({ at: 'ring', p: 10 })
     expect(s.bonus).toEqual([0, 0])
     expect(roll(s).dice).not.toBeNull()
+    // фішка, що 6 кроками за викуп потрапила на В (чи П, чи била), після кидка знову ходить
+    let b = apply({ ...make([{ at: 'ring', p: 3 }], [], [1, 2]), dice: null, bonus: [1, 0] }, { type: 'bonus', piece: 0 })!
+    expect(b.pieces[0][0]).toEqual({ at: 'ring', p: -1 }) // 3+6 = 9 — В, назад
+    expect(b.frozen).toBe(0)
+    b = roll(b)
+    expect(b.frozen).toBeNull()
+    expect(legalActions(b).some((m) => m.action.type === 'use' && m.action.piece === 0)).toBe(true)
     // якщо піти нічим — бонус пропадає, кидаєш як завжди
     const stuck = { ...make([], [], [1, 1]), dice: null, bonus: [1, 0] }
     expect(legalActions(stuck)).toEqual([])
@@ -237,6 +244,15 @@ describe('одна фішка на ходу', () => {
     const done = (slot: number): Piece => ({ at: 'done', slot })
     const st = make([{ at: 'ring', p: 47 }, done(3), done(2), done(1)], [], [2, 3])
     expect(legalActions(st).map((m) => m.action)).toEqual([use(0, 0)]) // 47+2 — вільне місце в рукаві; 47+3 і 47+5 — на свої
+  })
+
+  it('обидва кубики не зіграти — ходиш більшим', () => {
+    const done = (slot: number): Piece => ({ at: 'done', slot })
+    // 44+4 = клітинка під рукавом, 44+5 = рукав; після будь-якого з них другий — перебір, і сумою 9 — теж
+    const st = make([{ at: 'ring', p: 44 }, done(3), done(2), done(1)], [], [4, 5])
+    expect(legalActions(st).map((m) => m.action)).toEqual([use(0, 1)])
+    expect(apply(st, use(0, 0))).toBeNull() // 4 не можна
+    expect(apply(st, use(0, 1))!.pieces[0][0]).toEqual({ at: 'done', slot: 0 })
   })
 
   it('дві фішки на ходу — кубики окремо можна', () => {
