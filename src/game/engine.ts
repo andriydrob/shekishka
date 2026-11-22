@@ -243,9 +243,16 @@ export function apply(st: State, a: Action): State | null {
 
 // Якщо після кидка ходити може лише одна фішка — вона йде на суму обох кубиків (2 і 3 → 5),
 // а не 2, а потім 3: інакше на півдорозі можна «зачепити» П чи В. Якщо сумою не можна — ходить кубиками окремо.
-function onlySum(moves: { action: Action; next: State }[]) {
+// Фішка, яку тримає своя ж попереду, теж рахується: після першого кубика вона звільняється.
+function onlySum(st: State, moves: { action: Action; next: State }[]) {
   const sums = moves.filter((m) => m.action.type === 'use' && m.action.dice.length === 2)
-  const pieces = new Set(moves.map((m) => m.action.type === 'use' && m.action.piece))
+  const pieces = new Set<number>()
+  for (const m of moves) {
+    if (m.action.type !== 'use') continue
+    pieces.add(m.action.piece)
+    if (m.action.dice.length === 1 && m.next.current === st.current && m.next.winner === null)
+      for (const f of legalActions(m.next)) if (f.action.type === 'use') pieces.add(f.action.piece)
+  }
   return pieces.size === 1 && sums.length ? sums : moves
 }
 
@@ -295,5 +302,5 @@ export function legalActions(st: State): { action: Action; next: State }[] {
       }
     }
   })
-  return st.used[0] || st.used[1] ? out : biggerOnly(st, onlySum(out))
+  return st.used[0] || st.used[1] ? out : biggerOnly(st, onlySum(st, out))
 }

@@ -260,6 +260,14 @@ describe('одна фішка на ходу', () => {
     const st = make([{ at: 'ring', p: 10 }, { at: 'ring', p: 20 }, done(3), done(2)], [], [2, 3])
     expect(apply(st, use(0, 0))).not.toBeNull()
   })
+
+  it('задня фішка впритул за передньою: після першого кубика ходить і вона — сума не обов’язкова', () => {
+    // 42 — кут, 43 — впритул, 45 — «В»: 1 і 1 граються двома фішками, не стаючи на «В»
+    const st = make([{ at: 'ring', p: 42 }, { at: 'ring', p: 43 }], [], [1, 1])
+    const s = apply(st, use(1, 0))!
+    expect(s).not.toBeNull()
+    expect(apply(s, use(0, 1))!.pieces[0].slice(0, 2)).toEqual([{ at: 'ring', p: 43 }, { at: 'ring', p: 44 }])
+  })
 })
 
 describe('боти', () => {
