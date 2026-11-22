@@ -31,7 +31,10 @@ export interface State {
   places?: number[] // хто довів усі фішки до кінця, по порядку: 1-ше, 2-ге місце… (у старих онлайн-кімнатах поля нема)
   frozen: number | null // фішка поточного гравця, що вже била чи стрибала по П/В: до кінця ходу не ходить
   bonus: number[] // скільки разів у гравця викупили фішку: стільки разів по 6 кроків на початку його ходу
+  history?: { pl: number; dice: [number, number] }[] // останні кидки: хто що викинув (у старих онлайн-кімнатах поля нема)
 }
+
+const HISTORY_KEPT = 30 // стан онлайн-кімнати їде гравцям щосекунди — довгу історію не тягаємо
 
 export const PIECES = 4
 // Повне коло закінчується на своїй стартовій клітинці (прогрес 48 = клітинка під рукавом),
@@ -64,6 +67,7 @@ export function newGame(players: number, rng: Rng = Math.random): { state: State
       places: [],
       frozen: null,
       bonus: sides.map(() => 0),
+      history: [],
     },
   }
 }
@@ -72,7 +76,9 @@ export function roll(st: State, rng: Rng = Math.random): State {
   if (st.dice || st.winner !== null || legalActions(st).length) return st // спершу 6 кроків за викуп
   const bonus = [...st.bonus]
   bonus[st.current] = 0 // бонус, яким нема як піти, пропадає
-  return { ...st, bonus, dice: [rollDie(rng), rollDie(rng)], used: [false, false] }
+  const dice: [number, number] = [rollDie(rng), rollDie(rng)]
+  const history = [...(st.history ?? []), { pl: st.current, dice }].slice(-HISTORY_KEPT)
+  return { ...st, bonus, dice, used: [false, false], history }
 }
 
 export const ringIdx = (side: Side, p: number) => mod(startIdx(side) + p, RING)

@@ -117,6 +117,9 @@ function seatName(settings: Settings, i: number) {
 }
 // за кольором — щоб відрізнити двох однакових ботів
 const colorName = (settings: Settings, i: number) => `${PLAYER_NAMES_COLOR[i]}${settings.seats[i] !== 'human' ? ' · бот' : ''}`
+// для речень: «Жовтий бот вбив фішку Червоного»
+const nameWho = (settings: Settings, i: number) => `${PLAYER_NAMES_COLOR[i]}${settings.seats[i] !== 'human' ? ' бот' : ''}`
+const nameWhose = (settings: Settings, i: number) => `${PLAYER_NAMES_COLOR[i].replace(/ій$/, 'ього').replace(/ий$/, 'ого')}${settings.seats[i] !== 'human' ? ' бота' : ''}`
 
 // Короткий опис того, що сталося після ходу.
 function describe(prev: State, next: State, a: Action, who: string): string | null {
@@ -288,12 +291,14 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const [rolling, setRolling] = useState(false)
   const [hop, setHop] = useState<Hop | null>(null)
   const [kills, setKills] = useState<Kill[]>([])
-  const [toast, setToast] = useState<{ key: number; text: string } | null>(null)
+  const [toast, setToast] = useState<{ key: number; text: string; kind: 'bad' | 'good' | 'info' } | null>(null)
+  // на великому екрані історія кидків одразу розгорнута, на телефоні — згорнута (місця мало)
+  const [historyOpen, setHistoryOpen] = useState(() => { try { return matchMedia('(min-width: 1000px) and (min-height: 650px)').matches } catch { return false } })
   const [turnBanner, setTurnBanner] = useState<{ key: number; text: string; mine: boolean; color: string } | null>(null)
   const toastTimer = useRef(0)
-  const showToast = (text: string) => {
+  const showToast = (text: string, kind: 'bad' | 'good' | 'info') => {
     clearTimeout(toastTimer.current)
-    setToast({ key: Date.now(), text })
+    setToast({ key: Date.now(), text, kind })
     toastTimer.current = window.setTimeout(() => setToast(null), TOAST_MS)
   }
   const timers = useRef<number[]>([])
@@ -335,9 +340,12 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
         victims.push({ key: `${vpl}-${vpi}-${next.turn}`, cell, color: PLAYER_COLORS[vpl], boom: false, owner: vpl })
     }))
     // сповіщення тому, чию фішку вбили (на цьому пристрої)
-    const humans = settings.seats.filter((s) => s === 'human').length
-    const isMine = (owner: number) => (online ? owner === settings.mySeat : settings.seats[owner] === 'human')
-    const killText = (owner: number) => `${!online && humans > 1 ? `${PLAYER_NAMES_COLOR[owner]}, твою` : 'Твою'} фішку вбив ${seatName(settings, pl)}!`
+    // кого вбито і ким — бачать усі; «я» на цьому пристрої: своє місце онлайн або єдина людина офлайн (кілька людей — нейтрально)
+    const viewerSeat = online ? settings.mySeat : settings.seats.filter((s) => s === 'human').length === 1 ? settings.seats.indexOf('human') : -1
+    const killNotice = (owner: number): [string, 'bad' | 'good' | 'info'] =>
+      owner === viewerSeat ? [`Твою фішку вбив ${nameWho(settings, pl)}!`, 'bad']
+        : pl === viewerSeat ? [`Ти вбиваєш фішку ${nameWhose(settings, owner)}!`, 'good']
+          : [`${nameWho(settings, pl)} вбив фішку ${nameWhose(settings, owner)}`, 'info']
     let total = end
     if (victims.length) {
       setKills(victims)
@@ -346,7 +354,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
         const hit = idx >= 0 ? idx * STEP_MS + 120 : end
         at(hit, () => {
           setKills((ks) => ks.map((k) => (k.key === v.key ? { ...k, boom: true } : k)))
-          if (isMine(v.owner)) showToast(killText(v.owner))
+          showToast(...killNotice(v.owner))
         })
         total = Math.max(total, hit + BOOM_MS)
       })
@@ -517,7 +525,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
 
       <main className="board-wrap">
         <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} kills={kills} bottom={viewer >= 0 ? game.sides[viewer] : undefined} />
-        {toast && <div key={toast.key} className="toast" role="alert">{toast.text}</div>}
+        {toast && <div key={toast.key} className={`toast ${toast.kind}`} role="alert">{toast.text}</div>}
         {turnBanner && (
           <div key={turnBanner.key} className={`turn-banner ${turnBanner.mine ? '' : 'other'}`} style={{ '--pc': turnBanner.color } as React.CSSProperties} role="status">
             {turnBanner.text}
@@ -558,6 +566,23 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
           })}
         </ol>
         <p className="message" aria-live="polite">{message}</p>
+        {!!game.history?.length && (
+          <details className="history" open={historyOpen} onToggle={(e) => setHistoryOpen(e.currentTarget.open)}>
+            <summary>Історія кидків</summary>
+            <ol>
+              {[...game.history].reverse().map((h, i) => (
+                <li key={i}>
+                  <span className="dot" style={{ background: PLAYER_COLORS[h.pl] }} aria-hidden />
+                  <span className="who">{seatName(settings, h.pl) === 'Ти' ? 'Ти' : colorName(settings, h.pl)}</span>
+                  <span className="pair" role="img" aria-label={`${h.dice[0]} і ${h.dice[1]}`}>
+                    <Die value={h.dice[0]} used={false} />
+                    <Die value={h.dice[1]} used={false} />
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </details>
+        )}
         {isHuman && selected === null && legal.length > 0 && <p className="muted hint">{game.dice ? (legal.every((m) => m.action.type === 'use' && m.action.dice.length === 2) && !game.used[0] && !game.used[1] ? 'Ходить лише одна фішка — обидва кубики разом' : 'Торкнись фішки, яка світиться') : 'У тебе викупили фішку: спершу зроби 6 кроків будь-якою фішкою'}</p>}
       </aside>
 

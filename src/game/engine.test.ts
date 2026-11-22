@@ -212,6 +212,17 @@ describe('правила', () => {
   })
 })
 
+describe('історія кидків', () => {
+  it('кожен кидок записується: хто й що викинув; зберігаються останні 30', () => {
+    let s: State = { ...make([], [], [1, 2]), dice: null }
+    s = roll(s, () => 0.99) // 6 і 6
+    expect(s.history).toEqual([{ pl: 0, dice: [6, 6] }])
+    for (let i = 0; i < 40; i++) s = roll({ ...s, dice: null, current: i % 2 }, () => 0)
+    expect(s.history).toHaveLength(30)
+    expect(s.history!.at(-1)).toEqual({ pl: 1, dice: [1, 1] })
+  })
+})
+
 describe('одна фішка на ходу', () => {
   it('ходить сумою обох кубиків, окремим кубиком не можна', () => {
     const done = (slot: number): Piece => ({ at: 'done', slot })

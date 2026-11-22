@@ -97,6 +97,9 @@ button, select { font: inherit; color: inherit; }
   pointer-events: none; transform: translateX(-50%);
   animation: toast 2s var(--ease-out) forwards;
 }
+/* ти вбив — зелене; вбили когось іншого — темне */
+.toast.good { background: #15803d; box-shadow: 0 10px 30px rgba(0,0,0,.55), 0 0 0 2px rgba(255,255,255,.3), 0 0 28px rgba(71,209,94,.5); }
+.toast.info { background: rgba(20, 22, 28, 0.95); box-shadow: 0 10px 30px rgba(0,0,0,.55), 0 0 0 2px rgba(255,107,107,.7); }
 @keyframes toast {
   0% { opacity: 0; transform: translate(-50%, -12px) scale(0.9); }
   10%, 85% { opacity: 1; transform: translate(-50%, 0) scale(1); }
@@ -303,3 +306,22 @@ button, select { font: inherit; color: inherit; }
   .buybacks .tag { display: none; }
   .side.left:has(.buybacks) .mine > .muted { display: none; } /* поки вибираєш — без рядка «Вдома · у грі…», фішки й так видно */
 }
+
+/* історія кидків: найновіші зверху */
+.history { font-size: 14px; }
+.history summary { cursor: pointer; color: var(--muted); font-weight: 600; padding: 6px 0; }
+.history ol { list-style: none; margin: 4px 0 0; padding: 0 4px 0 0; display: grid; gap: 4px; max-height: min(200px, 28vh); overflow-y: auto; }
+.history li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.history li:first-child { font-weight: 700; }
+.history .who { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history .pair { display: flex; gap: 4px; }
+.history .die { width: 22px; filter: none; }
+/* малий екран: історія спливає поверх, а не штовхає колонку за край екрана */
+@media (max-width: 999px), (max-height: 649px) {
+  .history { position: relative; }
+  .history ol {
+    position: absolute; z-index: 20; left: 0; right: 0; top: 100%; max-height: 50vh; padding: 8px 10px;
+    background: var(--surface); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  }
+}
+@media (orientation: landscape) and (max-height: 500px) { .history ol { top: auto; bottom: 100%; max-height: 70vh; } }
