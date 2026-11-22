@@ -34,7 +34,9 @@ function danger(st: State, me: number): number {
 }
 
 function score(st: State, me: number, careful: boolean): number {
-  if (st.winner !== null) return st.winner === me ? 1e6 : -1e6
+  const places = st.places ?? []
+  if (places.includes(me)) return 1e6 - 1e3 * places.indexOf(me) // фінішувати — і чим раніше, тим краще
+  if (st.winner !== null) return -1e6 // гра скінчилась, а мене серед місць нема — програв
   const sum = (pl: number) => st.pieces[pl].reduce((a, pc) => a + value(pc), 0)
   const prisoners = st.pieces.flat().filter((pc) => pc.at === 'captured' && pc.by === me).length
   let opp = 0

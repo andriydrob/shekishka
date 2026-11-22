@@ -27,7 +27,8 @@ export interface State {
   turn: number
   dice: [number, number] | null
   used: [boolean, boolean]
-  winner: number | null
+  winner: number | null // перше місце; не null — гра скінчилась (лишився один гравець — він програв)
+  places?: number[] // хто довів усі фішки до кінця, по порядку: 1-ше, 2-ге місце… (у старих онлайн-кімнатах поля нема)
   frozen: number | null // фішка поточного гравця, що вже била чи стрибала по П/В: до кінця ходу не ходить
   bonus: number[] // скільки разів у гравця викупили фішку: стільки разів по 6 кроків на початку його ходу
 }
@@ -60,6 +61,7 @@ export function newGame(players: number, rng: Rng = Math.random): { state: State
       dice: null,
       used: [false, false],
       winner: null,
+      places: [],
       frozen: null,
       bonus: sides.map(() => 0),
     },
@@ -100,7 +102,9 @@ function enterJailCell(s: State, me: number, pi: number, p: number, stage: 0 | 1
 }
 
 function endTurn(s: State) {
-  s.current = (s.current + 1) % s.sides.length
+  const out = s.places ?? []
+  do s.current = (s.current + 1) % s.sides.length
+  while (out.includes(s.current)) // хто вже фінішував — не ходить
   s.turn++
   s.dice = null
   s.used = [false, false]
@@ -185,9 +189,18 @@ function tryUse(st: State, pi: number, dice: DieIdx[]): State | null {
     } else if (!moveFrom(s, me, pi, pc.p + JAIL_EXIT, n)) return null
   } else return null
   for (const i of dice) s.used[i] = true
-  if (s.pieces[me].every((x) => x.at === 'done')) s.winner = me
-  else if (s.used[0] && s.used[1]) endTurn(s)
+  if (!checkFinish(s, me) && s.used[0] && s.used[1]) endTurn(s)
   return s
+}
+
+// Усі фішки дійшли до кінця рукава: гравець займає наступне місце й більше не ходить.
+// Гра йде, доки не лишиться один — він програв.
+function checkFinish(s: State, me: number): boolean {
+  if (!s.pieces[me].every((x) => x.at === 'done')) return false
+  s.places = [...(s.places ?? []), me]
+  if (s.places.length >= s.sides.length - 1) s.winner = s.places[0]
+  else endTurn(s)
+  return true
 }
 
 // 6 кроків за викуп будь-якою фішкою на полі; вивести з-за дошки чи викупити ними не можна.
@@ -201,7 +214,7 @@ function tryBonus(st: State, pi: number): State | null {
   const s: State = { ...st, bonus: [...st.bonus], pieces: st.pieces.map((row) => [...row]) }
   if (!moveFrom(s, me, pi, from, BONUS_STEPS)) return null
   s.bonus[me]--
-  if (s.pieces[me].every((x) => x.at === 'done')) s.winner = me
+  checkFinish(s, me)
   return s
 }
 
@@ -214,7 +227,17 @@ export function apply(st: State, a: Action): State | null {
     endTurn(s)
     return s
   }
+  // одна фішка на ходу — окремим кубиком не можна, лише сумою (перевіряємо й тут, бо сервер довіряє apply)
+  if (a.dice.length === 1 && st.dice && !st.used[0] && !st.used[1] && legalActions(st).every((m) => m.action.type === 'use' && m.action.dice.length === 2)) return null
   return tryUse(st, a.piece, a.dice)
+}
+
+// Якщо після кидка ходити може лише одна фішка — вона йде на суму обох кубиків (2 і 3 → 5),
+// а не 2, а потім 3: інакше на півдорозі можна «зачепити» П чи В. Якщо сумою не можна — ходить кубиками окремо.
+function onlySum(moves: { action: Action; next: State }[]) {
+  const sums = moves.filter((m) => m.action.type === 'use' && m.action.dice.length === 2)
+  const pieces = new Set(moves.map((m) => m.action.type === 'use' && m.action.piece))
+  return pieces.size === 1 && sums.length ? sums : moves
 }
 
 const COMBOS: DieIdx[][] = [[0], [1], [0, 1]]
@@ -237,8 +260,8 @@ export function legalActions(st: State): { action: Action; next: State }[] {
     return out
   }
   st.pieces[st.current].forEach((pc, piece) => {
-    // однакові фішки вдома/в полоні — достатньо однієї
-    const key = pc.at === 'home' || pc.at === 'ready' || pc.at === 'captured' ? pc.at : `p${piece}`
+    // однакові фішки вдома — достатньо однієї; полонені — по одній на кожного, хто тримає (вибір, у кого викупити)
+    const key = pc.at === 'home' || pc.at === 'ready' ? pc.at : pc.at === 'captured' ? `captured${pc.by}` : `p${piece}`
     for (const dice of COMBOS) {
       if (dice.length === 1 && dice[0] === 1 && st.dice![0] === st.dice![1] && !st.used[0]) continue // дубль: кубики однакові
       const k = `${key}:${dice.join()}`
@@ -250,5 +273,5 @@ export function legalActions(st: State): { action: Action; next: State }[] {
       }
     }
   })
-  return out
+  return st.used[0] || st.used[1] ? out : onlySum(out)
 }

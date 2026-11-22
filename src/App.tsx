@@ -21,6 +21,7 @@ const JUMP_PAUSE = 380 // стоїть на П/В/стрілці перед ст
 const JUMP_MS = 420 // сам стрибок
 const BOOM_MS = 700 // вибух побитої фішки
 const TOAST_MS = 2000 // скільки показувати «Твою фішку вбили»
+const TURN_BANNER_MS = 1500 // «Твій хід!» посеред поля
 const sameCell = (a: Cell | null | undefined, b: Cell | null | undefined) => !!a && !!b && a.c === b.c && a.r === b.r
 
 const roomFromUrl = () => new URLSearchParams(location.search).get('room')
@@ -114,6 +115,8 @@ function seatName(settings: Settings, i: number) {
   if (settings.mySeat !== undefined) return i === settings.mySeat ? 'Ти' : PLAYER_NAMES_COLOR[i]
   return settings.seats.filter((s) => s === 'human').length === 1 ? 'Ти' : `Гравець ${i + 1}`
 }
+// за кольором — щоб відрізнити двох однакових ботів
+const colorName = (settings: Settings, i: number) => `${PLAYER_NAMES_COLOR[i]}${settings.seats[i] !== 'human' ? ' · бот' : ''}`
 
 // Короткий опис того, що сталося після ходу.
 function describe(prev: State, next: State, a: Action, who: string): string | null {
@@ -136,6 +139,8 @@ function describe(prev: State, next: State, a: Action, who: string): string | nu
   }
   if (capturedNow > capturedBefore) parts.push('фішку суперника побито!')
   if (a.type === 'bonus') parts.unshift('6 кроків за викуп')
+  const placed = next.places ?? []
+  if (placed.length > (prev.places?.length ?? 0)) parts.push(`усі фішки на місці — ${placed.length} місце!`)
   return parts.length ? `${who}: ${parts.join(', ')}` : null
 }
 
@@ -284,6 +289,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const [hop, setHop] = useState<Hop | null>(null)
   const [kills, setKills] = useState<Kill[]>([])
   const [toast, setToast] = useState<{ key: number; text: string } | null>(null)
+  const [turnBanner, setTurnBanner] = useState<{ key: number; text: string; mine: boolean; color: string } | null>(null)
   const toastTimer = useRef(0)
   const showToast = (text: string) => {
     clearTimeout(toastTimer.current)
@@ -296,6 +302,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
   const me = game.current
   const seat = settings.seats[me]
   const isHuman = (online ? me === settings.mySeat : seat === 'human') && game.winner === null
+  const place = (pl: number) => (game.places ?? (game.winner === null ? [] : [game.winner])).indexOf(pl)
   const legal = useMemo(() => legalActions(game), [game])
   const humanIdx = online ? settings.mySeat! : isHuman ? me : settings.seats.indexOf('human')
   const viewer = online ? settings.mySeat! : settings.seats.indexOf('human') // чиє поле внизу
@@ -418,6 +425,22 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
     setMessage(`${seatName(settings, me)}: час вийшов, хід зроблено автоматично`)
   }, [left]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // чий хід: «Твій хід!» / «Хід: Червоний» — посеред поля, коли дограє анімація попереднього ходу
+  const singleViewer = !!online || settings.seats.filter((s) => s === 'human').length === 1
+  const turnLabel = isHuman && singleViewer ? 'Твій хід' : colorName(settings, me)
+  useEffect(() => {
+    if (game.winner !== null) return
+    const text = isHuman && singleViewer ? 'Твій хід!' : `Хід: ${PLAYER_NAMES_COLOR[me]}`
+    const wait = Math.max(0, busyUntil.current - Date.now())
+    const show = window.setTimeout(() => setTurnBanner({ key: Date.now(), text, mine: isHuman, color: PLAYER_COLORS[me] }), wait)
+    const hide = window.setTimeout(() => setTurnBanner(null), wait + TURN_BANNER_MS)
+    return () => {
+      clearTimeout(show)
+      clearTimeout(hide)
+      setTurnBanner(null)
+    }
+  }, [game.turn, game.winner]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // боти й автоматичний пропуск, коли ходів немає
   useEffect(() => {
     if (game.winner !== null) return
@@ -451,7 +474,9 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
     const capture = prisoners(m.next) > prisoners(game)
     return cell ? [{ key: m.action.type === 'bonus' ? 'bonus' : m.action.dice.join(), cell, label, capture, onPick: () => act(m.action) }] : []
   })
-  const buyback = isHuman ? legal.find((m) => m.action.type === 'use' && game.pieces[me][m.action.piece].at === 'captured') : undefined
+  // по варіанту на кожного, у кого твоя фішка в полоні: від вибору залежить, хто отримає 6 кроків за викуп
+  const buybacks = isHuman ? legal.filter((m) => m.action.type === 'use' && game.pieces[me][m.action.piece].at === 'captured') : []
+  const captorOf = (m: (typeof legal)[number]) => { const pc = m.action.type === 'use' ? game.pieces[me][m.action.piece] : null; return pc?.at === 'captured' ? pc.by : -1 }
 
   const myPieces = humanIdx >= 0 ? game.pieces[humanIdx] : []
   const finished = myPieces.filter((_, i) => isFinished(myPieces, i)).length
@@ -463,7 +488,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
         <div className={`dice ${rolling ? 'rolling' : ''}`} aria-live="polite" aria-label={game.dice ? `Кубики: ${game.dice.join(' і ')}` : 'Кубики ще не кинуто'}>
           {(game.dice ?? [0, 0]).map((v, i) => <Die key={i} value={v} used={!!game.dice && game.used[i]} />)}
         </div>
-        <button className="btn primary" disabled={!isHuman || !!game.dice || legal.length > 0} onClick={doRoll}>Кинути кубики</button>
+        <button className={`btn primary ${isHuman && !game.dice && legal.length === 0 ? 'attention' : ''}`} disabled={!isHuman || !!game.dice || legal.length > 0} onClick={doRoll}>Кинути кубики</button>
         {humanIdx >= 0 && (
           <div className="mine">
             <h2>{isHuman ? `Хід: ${seatName(settings, me)}` : 'Твої фішки'}</h2>
@@ -475,12 +500,29 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
             <p className="muted">Вдома {count('home')} · у грі {count('ready') + count('ring') + count('jail') + count('done') - finished} · в полоні {count('captured')} · фініш {finished}</p>
           </div>
         )}
-        <button className="btn" disabled={!buyback} onClick={() => buyback && act(buyback.action)}>Викупити</button>
+        {buybacks.length < 2 ? (
+          <button className="btn" disabled={!buybacks.length} onClick={() => buybacks[0] && act(buybacks[0].action)}>Викупити</button>
+        ) : (
+          <div className="buybacks" role="group" aria-label="У кого викупити">
+            <span className="muted">У кого викупити?</span>
+            {buybacks.map((m) => (
+              <button key={captorOf(m)} className="btn" onClick={() => act(m.action)}>
+                <span className="dot" style={{ background: PLAYER_COLORS[captorOf(m)] }} aria-hidden />
+                {PLAYER_NAMES_COLOR[captorOf(m)]}{settings.seats[captorOf(m)] !== 'human' && <span className="tag"> · бот</span>}
+              </button>
+            ))}
+          </div>
+        )}
       </aside>
 
       <main className="board-wrap">
         <Board state={game} selectable={selectable} selected={selected} onSelect={(pi) => setSelected(pi === selected ? null : pi)} targets={targets} hop={hop} kills={kills} bottom={viewer >= 0 ? game.sides[viewer] : undefined} />
         {toast && <div key={toast.key} className="toast" role="alert">{toast.text}</div>}
+        {turnBanner && (
+          <div key={turnBanner.key} className={`turn-banner ${turnBanner.mine ? '' : 'other'}`} style={{ '--pc': turnBanner.color } as React.CSSProperties} role="status">
+            {turnBanner.text}
+          </div>
+        )}
       </main>
 
       <aside className="side right">
@@ -492,6 +534,12 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
             <svg viewBox="0 0 24 24" aria-hidden><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
         </div>
+        {game.winner === null && (
+          <div className={`turn-card ${isHuman ? 'my-turn' : ''}`} style={{ '--pc': PLAYER_COLORS[me] } as React.CSSProperties} aria-live="polite">
+            <span className="dot" style={{ background: PLAYER_COLORS[me] }} aria-hidden />
+            <span>{turnLabel}</span>
+          </div>
+        )}
         <ol className="players">
           {game.sides.map((_, pl) => {
             const prisoners = game.pieces.flat().filter((p) => p.at === 'captured' && p.by === pl)
@@ -500,7 +548,7 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
               <li key={pl} className={pl === me ? 'active' : ''} aria-current={pl === me ? 'true' : undefined}>
                 <span className="dot" style={{ background: PLAYER_COLORS[pl] }} aria-hidden />
                 <span className="name">{seatName(settings, pl)}</span>
-                <span className="muted">{done}/4</span>
+                <span className="muted">{place(pl) >= 0 ? `${place(pl) + 1} місце` : game.winner !== null ? 'програв' : `${done}/4`}</span>
                 {prisoners.length > 0 && <span className="prisoners" title="Полонені">
                   {game.pieces.flatMap((row, owner) => row.filter((p) => p.at === 'captured' && p.by === pl).map((_, k) =>
                     <span key={`${owner}-${k}`} className="dot small" style={{ background: PLAYER_COLORS[owner] }} />))}
@@ -510,14 +558,22 @@ function Game({ settings, onMenu, onRestart, online }: { settings: Settings; onM
           })}
         </ol>
         <p className="message" aria-live="polite">{message}</p>
-        {isHuman && selected === null && legal.length > 0 && <p className="muted hint">{game.dice ? 'Торкнись фішки, яка світиться' : 'У тебе викупили фішку: спершу зроби 6 кроків будь-якою фішкою'}</p>}
-        <button className="btn" disabled={!isHuman || !game.dice || legal.length > 0} onClick={() => act({ type: 'pass' })}>Пропустити хід</button>
+        {isHuman && selected === null && legal.length > 0 && <p className="muted hint">{game.dice ? (legal.every((m) => m.action.type === 'use' && m.action.dice.length === 2) && !game.used[0] && !game.used[1] ? 'Ходить лише одна фішка — обидва кубики разом' : 'Торкнись фішки, яка світиться') : 'У тебе викупили фішку: спершу зроби 6 кроків будь-якою фішкою'}</p>}
       </aside>
 
       {game.winner !== null && (
         <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="win-h">
           <div className="panel">
             <h2 id="win-h" style={{ color: PLAYER_COLORS[game.winner] }}>{seatName(settings, game.winner)} перемагає!</h2>
+            <ol className="standings">
+              {game.sides.map((_, pl) => pl).sort((x, y) => (place(x) < 0 ? 99 : place(x)) - (place(y) < 0 ? 99 : place(y))).map((pl) => (
+                <li key={pl} className={place(pl) < 0 ? 'lost' : ''}>
+                  <span>{place(pl) >= 0 ? `${place(pl) + 1} місце` : 'Програв'}</span>
+                  <span className="dot" style={{ background: PLAYER_COLORS[pl] }} aria-hidden />
+                  <span>{seatName(settings, pl)}</span>
+                </li>
+              ))}
+            </ol>
             <div className="row">
               {!online && <button className="btn primary" autoFocus onClick={onRestart}>Ще раз</button>}
               <button className="btn" onClick={onMenu}>Меню</button>

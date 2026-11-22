@@ -6,9 +6,12 @@ import { apply, isFinished, legalActions, newGame, roll, type Action, type Piece
 // Гравець 0 знизу (side 2), гравець 1 зверху (side 0). Старт низу = ring 30, верху = ring 6.
 function make(p0: Piece[], p1: Piece[] = [], dice: [number, number] = [1, 2], turn = 5): State {
   const fill = (a: Piece[]) => [...a, ...Array(4 - a.length).fill({ at: 'home' })]
-  return { sides: [2, 0], pieces: [fill(p0), fill(p1)], current: 0, turn, dice, used: [false, false], winner: null, frozen: null, bonus: [0, 0] }
+  return { sides: [2, 0], pieces: [fill(p0), fill(p1)], current: 0, turn, dice, used: [false, false], winner: null, places: [], frozen: null, bonus: [0, 0] }
 }
 const use = (piece: number, ...dice: (0 | 1)[]): Action => ({ type: 'use', piece, dice })
+// друга фішка на ходу: коли ходить лише одна — дозволена тільки сума кубиків, а тут перевіряємо окремі кубики
+const spare: Piece = { at: 'ring', p: 40 }
+const jailSpare: Piece = { at: 'jail', p: 14, stage: 0, since: 0 } // ходить лише на 3
 
 describe('поле', () => {
   it('клітинки збігаються з фото', () => {
@@ -43,7 +46,7 @@ describe('правила', () => {
   })
 
   it('окремо кубики або сума', () => {
-    const st = make([{ at: 'ring', p: 20 }], [], [3, 4])
+    const st = make([{ at: 'ring', p: 20 }, spare], [], [3, 4])
     expect(apply(st, use(0, 0, 1))!.pieces[0][0]).toEqual({ at: 'ring', p: 27 })
     expect(apply(st, use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: 23 })
   })
@@ -68,14 +71,14 @@ describe('правила', () => {
 
   it('П летить +10, В повертає −10', () => {
     // П на ring 43 (side 3 pos 7) → для нас p=13
-    expect(apply(make([{ at: 'ring', p: 10 }], [], [3, 5]), use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: 23 })
+    expect(apply(make([{ at: 'ring', p: 10 }, spare], [], [3, 5]), use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: 23 })
     // В на ring 39 (side 3 pos 3) → p=9 → назад на −1
-    expect(apply(make([{ at: 'ring', p: 7 }], [], [2, 5]), use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: -1 })
+    expect(apply(make([{ at: 'ring', p: 7 }, spare], [], [2, 5]), use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: -1 })
   })
 
   it('тюрма: стрілка → Т, потім 3, потім 6 у різних кидках, вихід від клітинки під «6»', () => {
     // стрілка на ring 44 → p=14
-    let s = apply(make([{ at: 'ring', p: 10 }], [], [4, 3]), use(0, 0))!
+    let s = apply(make([{ at: 'ring', p: 10 }, spare], [], [4, 3]), use(0, 0))!
     expect(s.pieces[0][0]).toMatchObject({ at: 'jail', stage: 0 })
     expect(apply(s, use(0, 1))).toBeNull() // 3 у тому самому кидку не рахується
     s = { ...s, turn: s.turn + 2, dice: [3, 6], used: [false, false] }
@@ -94,7 +97,7 @@ describe('правила', () => {
   it('у тюрмі можна бити чужі фішки, на свою ставати не можна', () => {
     // стрілка правої тюрми = ring 44: для нас (side 2) p=14, для суперника (side 0) p=38
     const oppInT: Piece = { at: 'jail', p: 38, stage: 0, since: 0 }
-    const s = apply(make([{ at: 'ring', p: 10 }], [oppInT], [4, 1]), use(0, 0))!
+    const s = apply(make([{ at: 'ring', p: 10 }, spare], [oppInT], [4, 1]), use(0, 0))!
     expect(s.pieces[0][0]).toMatchObject({ at: 'jail', stage: 0 })
     expect(s.pieces[1][0]).toEqual({ at: 'captured', by: 0 })
     // крок «3» на клітинку, де стоїть чужа — теж б'є
@@ -107,11 +110,11 @@ describe('правила', () => {
 
   it('після биття або П/В цією фішкою до кінця ходу не ходиш', () => {
     // побили (p1 + 3 → p4, де суперник) — другий кубик цією фішкою не можна, інших ходів нема → можна пропустити
-    const afterCapture = apply(make([{ at: 'ring', p: 1 }], [{ at: 'ring', p: 28 }], [3, 1]), use(0, 0))!
+    const afterCapture = apply(make([{ at: 'ring', p: 1 }, jailSpare], [{ at: 'ring', p: 28 }], [3, 1]), use(0, 0))!
     expect(apply(afterCapture, use(0, 1))).toBeNull()
     expect(apply(afterCapture, { type: 'pass' })!.current).toBe(1)
     // П (p10 + 3 → p13 → p23): другий кубик цією фішкою не можна
-    const afterFly = apply(make([{ at: 'ring', p: 10 }], [], [3, 1]), use(0, 0))!
+    const afterFly = apply(make([{ at: 'ring', p: 10 }, jailSpare], [], [3, 1]), use(0, 0))!
     expect(afterFly.pieces[0][0]).toEqual({ at: 'ring', p: 23 })
     expect(apply(afterFly, use(0, 1))).toBeNull()
     // В теж
@@ -135,6 +138,15 @@ describe('правила', () => {
     s = apply(s, use(0, 1))!
     expect(s.pieces[0][0]).toEqual({ at: 'ready' })
     expect(apply(make([{ at: 'captured', by: 1 }], [], [3, 3]), use(0, 0, 1))).toBeNull() // лише 6 на одному кубику
+  })
+
+  it('фішки в полоні в різних гравців — можна вибрати, у кого викупити', () => {
+    const st: State = { ...make([{ at: 'captured', by: 1 }, { at: 'captured', by: 2 }], [], [6, 1]), sides: [2, 0, 3], bonus: [0, 0, 0],
+      pieces: [[{ at: 'captured', by: 1 }, { at: 'captured', by: 2 }, { at: 'home' }, { at: 'home' }], [{ at: 'home' }, { at: 'home' }, { at: 'home' }, { at: 'home' }], [{ at: 'home' }, { at: 'home' }, { at: 'home' }, { at: 'home' }]] }
+    const buy = legalActions(st).filter((m) => m.action.type === 'use' && st.pieces[0][m.action.piece].at === 'captured')
+    expect(buy.map((m) => m.action)).toEqual([use(0, 0), use(1, 0)])
+    expect(apply(st, use(0, 0))!.bonus).toEqual([0, 1, 0]) // викупив у гравця 1 — 6 кроків йому
+    expect(apply(st, use(1, 0))!.bonus).toEqual([0, 0, 1]) // у гравця 2 — йому
   })
 
   it('у кого викупили — 6 кроків на початку свого ходу, до кидка; вивести чи викупити ними не можна', () => {
@@ -170,8 +182,8 @@ describe('правила', () => {
 
   it('коло замикається на клітинці під рукавом, у рукав — наступним кроком', () => {
     // з клітинки перед стартом: 1 → на клітинку під рукавом, 2 → перша клітинка рукава
-    expect(apply(make([{ at: 'ring', p: 47 }], [], [1, 2]), use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: 48 })
-    expect(apply(make([{ at: 'ring', p: 47 }], [], [1, 2]), use(0, 1))!.pieces[0][0]).toEqual({ at: 'done', slot: 0 })
+    expect(apply(make([{ at: 'ring', p: 47 }, spare], [], [1, 2]), use(0, 0))!.pieces[0][0]).toEqual({ at: 'ring', p: 48 })
+    expect(apply(make([{ at: 'ring', p: 47 }, spare], [], [1, 2]), use(0, 1))!.pieces[0][0]).toEqual({ at: 'done', slot: 0 })
   })
 
   it('фініш лише точним числом, перемога', () => {
@@ -180,7 +192,46 @@ describe('правила', () => {
     expect(apply(st, use(0, 0))).toBeNull() // перебір
     const s = apply(st, use(0, 1))!
     expect(s.pieces[0][0]).toEqual({ at: 'done', slot: 0 })
-    expect(s.winner).toBe(0)
+    expect(s.places).toEqual([0])
+    expect(s.winner).toBe(0) // удвох: один фінішував — другий програв, гра скінчилась
+  })
+
+  it('утрьох після першого фінішу гра триває, фінішний гравець більше не ходить', () => {
+    const done = (slot: number): Piece => ({ at: 'done', slot })
+    const home: Piece = { at: 'home' }
+    const st: State = {
+      sides: [2, 3, 0], current: 0, turn: 5, dice: [6, 2], used: [false, false], winner: null, places: [], frozen: null, bonus: [0, 0, 0],
+      pieces: [[{ at: 'ring', p: 47 }, done(3), done(2), done(1)], [home, home, home, home], [home, home, home, home]],
+    }
+    let s = apply(st, use(0, 1))!
+    expect(s.places).toEqual([0])
+    expect(s.winner).toBeNull() // ще двоє грають
+    expect(s.current).toBe(1) // хід одразу переходить далі, навіть із невикористаним кубиком
+    s = apply({ ...s, current: 2, dice: [1, 2] }, { type: 'pass' })!
+    expect(s.current).toBe(1) // гравця 0 пропускаємо
+  })
+})
+
+describe('одна фішка на ходу', () => {
+  it('ходить сумою обох кубиків, окремим кубиком не можна', () => {
+    const done = (slot: number): Piece => ({ at: 'done', slot })
+    const st = make([{ at: 'ring', p: 10 }, done(3), done(2), done(1)], [], [2, 3])
+    const legal = legalActions(st)
+    expect(legal.map((m) => m.action)).toEqual([use(0, 0, 1)])
+    expect(apply(st, use(0, 0))).toBeNull()
+    expect(apply(st, use(0, 0, 1))!.pieces[0][0]).toEqual({ at: 'ring', p: 15 })
+  })
+
+  it('коли сумою не можна (перебір у рукаві) — ходить окремим кубиком', () => {
+    const done = (slot: number): Piece => ({ at: 'done', slot })
+    const st = make([{ at: 'ring', p: 47 }, done(3), done(2), done(1)], [], [2, 3])
+    expect(legalActions(st).map((m) => m.action)).toEqual([use(0, 0)]) // 47+2 — вільне місце в рукаві; 47+3 і 47+5 — на свої
+  })
+
+  it('дві фішки на ходу — кубики окремо можна', () => {
+    const done = (slot: number): Piece => ({ at: 'done', slot })
+    const st = make([{ at: 'ring', p: 10 }, { at: 'ring', p: 20 }, done(3), done(2)], [], [2, 3])
+    expect(apply(st, use(0, 0))).not.toBeNull()
   })
 })
 
@@ -196,5 +247,7 @@ describe('боти', () => {
       s = apply(s, a)!
     }
     expect(s.winner).not.toBeNull()
+    expect(s.places).toHaveLength(n - 1) // гра йде, доки не лишиться один — той, хто програв
+    expect(new Set(s.places).size).toBe(n - 1)
   })
 })
